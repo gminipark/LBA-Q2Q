@@ -1,0 +1,19 @@
+<!doctype html>
+<html style="height: 100%;">
+  <body style="margin: 0px;height: 100%;">
+    <div style="padding:20px;"> 
+      {% if True %}
+      <img src="{{ image_src }}">
+      <p> original question: {{ original_question }} </p>
+      <p> ambiguous question:  {{ ambiguous_question }} </p>
+      <p> ambiguous question answer:  {{ ambiguous_answer }} </p>
+      <p> <strong> ambiguous entity: {{ ambiguous_entity }} </strong> </p>
+      <p> <strong> additional question: {{ additional_question }} </strong> </p>
+      <p> additional question answer: {{ additional_answer }} </p>
+      <p> qid: {{ q_id }} </p>
+      <p> entity_id: {{ entity_id }} </p>
+      <p> image_id: {{ image_id }} </p>
+      {% endif %}
+    </div>
+  </body>
+</html>
