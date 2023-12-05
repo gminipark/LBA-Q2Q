@@ -1,5 +1,8 @@
 # LBA-Q2Q
 
+## Ambigous Question Sample
+![Ambiguous Question Sample](./sample.png)
+
 
 ## Acknowledgement
 ```
