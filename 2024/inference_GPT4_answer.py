@@ -74,19 +74,18 @@ def CoT(image_id, ambiguous_question, ambiguous_entity, entity_id, ambiguous_que
     while q_count < 3 :
         switch = 0  
         additional_question2 = f"""[INST] <image>
-You are presented with an original question containing an ambiguous entity that is difficult to distinguish.
-Your task is to generate a clear yes/no question that helps specify the ambiguous entity referred to in the original question.
+You receive an original question that refers to an ambiguous entity, making it difficult to identify which one is being discussed. Your task is to create a new simple yes/no question, using the provided context, that helps clarify which {ambiguous_entity} is being referred to in the original question.
 
-1. Use the context from the previous conversation to form a new yes/no question that distinguishes the ambiguous entity from other instances of '{ambiguous_entity}'.
-2. In your question, leverage attributes of the {ambiguous_entity} or its relation to other entities mentioned in the conversation.
-3. If the yes/no question you generate allows successful identification of the ambiguous entity, display the question.
-4. If not, repeat the process by creating another question.
-Make sure each yes/no question uniquely identifies the {ambiguous_entity} referenced in the original question.
+In your new question, make sure to clearly differentiate the target {ambiguous_entity} from the other non-target {ambiguous_entity} instances in the image. Use distinguishing features such as the {ambiguous_entity}'s attributes, appearance, or its relative position to other non-target {ambiguous_entity} instances to help identify the correct one.
 
-The original question: '{ambiguous_question}'
+Once you've generated the question, answer it without explicitly stating the answer. If the answer is 'yes', present the question you created. If the answer is 'no', generate a different question and try again.
+
+Ensure that the yes/no question you create can reliably distinguish the target {ambiguous_entity} from the others. Avoid repeating any question that the ASSISTANT has already asked.
+
+The original question: ' {ambiguous_question}'
 The ambiguous entity: '{ambiguous_entity}'
 
-Context: {context}
+{context}
 ASSISTANT: [/INST]"""
         generated_question = generate_output(image_id, ambiguous_question, ambiguous_entity, additional_question2, entity_id, switch, tar_coordinate)
         context += f'ASSISTANT: {generated_question[0]}\n'
