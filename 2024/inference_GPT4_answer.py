@@ -33,30 +33,24 @@ model = AutoModelForPreTraining.from_pretrained("llava-hf/llava-v1.6-mistral-7b-
 tokenizer = AutoTokenizer.from_pretrained("llava-hf/llava-v1.6-mistral-7b-hf")
 
 def create_image_url_dict(complete_images_file, image_urls_file):
-    # 두 파일을 읽어 key는 이미지 이름, value는 URL로 하는 딕셔너리 생성
     image_url_dict = {}
 
     with open(complete_images_file, 'r') as img_file, open(image_urls_file, 'r') as url_file:
-        image_lines = img_file.readlines()  # 이미지 파일 리스트
-        url_lines = url_file.readlines()  # URL 리스트
+        image_lines = img_file.readlines() 
+        url_lines = url_file.readlines()          
         
-        # 두 파일의 라인 수가 같다는 가정 하에 실행 (각각의 줄이 매칭됨)
         for img_line, url_line in zip(image_lines, url_lines):
-            # 양쪽 파일에서 불러온 각 줄의 공백과 개행문자를 제거 후 딕셔너리에 저장
-            img_name = img_line.strip()  # 이미지 이름
-            img_url = url_line.strip()  # 이미지 URL
-            image_url_dict[img_name] = img_url  # 딕셔너리에 매핑
+            img_name = img_line.strip() 
+            img_url = url_line.strip()
+            image_url_dict[img_name] = img_url  
 
     return image_url_dict
 
-# 파일 경로 설정
 complete_images_file = 'path_to_image_num.txt'
 image_urls_file = 'path_to_image_urls.txt'
 
-# 딕셔너리 생성
 image_url_dict = create_image_url_dict(complete_images_file, image_urls_file)
 
-# 결과 출력
 print(image_url_dict)
 
 
@@ -67,8 +61,7 @@ def CoT(image_id, ambiguous_question, ambiguous_entity, entity_id, ambiguous_que
     }   
     key = f"{image_id}.jpg"
     image_url = image_url_dict[key]
-    #### 이 안에서 좌표 설정 및 모든 프롬프트 품고 있음 ####
-    # target box 좌표 설정
+
     locations = sceneGraphs[str(image_id)]['objects'][str(entity_id)]
     width, height = sceneGraphs[str(image_id)]['width'], sceneGraphs[str(image_id)]['height']
     x, y, w, h = locations['x'], locations['y'], locations['w'], locations['h']
@@ -76,25 +69,10 @@ def CoT(image_id, ambiguous_question, ambiguous_entity, entity_id, ambiguous_que
     y1, y2 = round(y/height,4), round((y+h)/height,4)
     tar_coordinate = (x, y, w, h)
 
-    # 다른 entity box 좌표 설정
-    keys = sceneGraphs[str(image_id)]['objects'].keys()
-    objects=sceneGraphs[str(image_id)]['objects']
-    i = 0
-    coordinates = ""
-    for k in keys:
-        if k != str(entity_id) and objects[k]['name'] == locations['name']:
-            i+=1
-            v = objects[k]
-            x1_ = round(v['x']/width , 4)
-            y1_ = round(v['y']/height , 4)
-            x2_ = round((v['x']+v['w'])/width , 4)
-            y2_ = round((v['y']+v['h'])/height , 4)
-            coordinates += f"The coordinates of non-target {v['name']+ str(i)} not in the question : ({x1_}, {y1_}, {x2_}, {y2_})\n"
     q_count = 0
     context = ""
     while q_count < 3 :
         switch = 0  
-        # 1번 질문
         additional_question2 = f"""[INST] <image>
 You are presented with an original question containing an ambiguous entity that is difficult to distinguish.
 Your task is to generate a clear yes/no question that helps specify the ambiguous entity referred to in the original question.
@@ -114,7 +92,7 @@ ASSISTANT: [/INST]"""
         context += f'ASSISTANT: {generated_question[0]}\n'
 
 
-
+        #GPT 4o
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {my_api_key}"
@@ -154,18 +132,18 @@ Question: {ambiguous_question}"""
             print(f"Error: {response.status_code}, {response.text}")
         case_switch = response.json()['choices'][0]['message']['content'].lower()
 
-        # yes인 경우
         if 'yes' in case_switch :
             context += 'USER: Yes\n'
             break
-        # no인 경우
         else : 
             context += f'USER: {case_switch}\n'
         q_count += 1 
+
     additional_question_final = f"""[INST] <image>
 {context}
 USER: {ambiguous_question} Answer in short answer.
 ASSISTANT: [/INST]"""
+
     final_output = generate_output(image_id, ambiguous_question, ambiguous_entity, additional_question_final, entity_id, switch, tar_coordinate)
     return final_output[0], final_output[1], ambiguous_question_answer, context
 
@@ -186,7 +164,6 @@ def generate_output(image_id, ambiguous_question, ambiguous_entity, additional_q
         inputs = processor(images=[image], text=additional_question, return_tensors="pt").to(device)
 
         image.save('img.jpg')
-        # 모델 출력 생성
         generated_ids = model.generate(**inputs, max_new_tokens=80, pad_token_id=tokenizer.eos_token_id)
         generated_text = processor.decode(generated_ids[0], skip_special_tokens=True)
         start = generated_text.find("[/INST]")
