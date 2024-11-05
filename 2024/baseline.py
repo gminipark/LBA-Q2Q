@@ -61,7 +61,7 @@ wrong_li = []
 
 print("테스트 시작")
 score = 0
-output_file = 'path_to_output_file.txt
+output_file = 'path_to_output_file.txt'
 with open(output_file,'w', encoding='utf-8') as f :
     f.write("테스트 시작")
     for i in range(300):
