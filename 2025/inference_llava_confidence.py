@@ -26,7 +26,7 @@ with open('train_sceneGraphs.json', 'r', encoding='utf-8') as file :
 
 from datasets import load_from_disk
 dataset = load_from_disk('lba_test')
-image_dir = "ambiguous_images"
+image_dir = "image dir path"
 
 
 df = dataset
@@ -69,14 +69,12 @@ def CoT(image_id, ambiguous_question, ambiguous_entity, entity_id, ambiguous_que
     i = 0
     q_count = 0
     context = ""
-    switch = 0
     output, _, answer, confi = QA(image_id, ambiguous_question, ambiguous_entity, entity_id, ambiguous_question_answer)
     if confi < 0.9 :
         pass
     else : 
         return confi, output, "tmp", answer, "tmp"
     while q_count < 3 :
-        switch = 0  
         # 1번 질문
         QG_prompt = f"""[INST] <image>
 You receive an original question that has an ambiguous entity difficult to specify.
@@ -93,11 +91,10 @@ The ambiguous entity: '{ambiguous_entity}'
 {context}
 ASSISTANT: [/INST]"""
         prompt = QG_prompt
-        generated_question = generate_output(image_id, ambiguous_question, ambiguous_entity, QG_prompt, entity_id, switch)
+        generated_question = generate_output(image_id, ambiguous_question, ambiguous_entity, QG_prompt, entity_id)
         context += f'USER: {generated_question[0]}\n'
 
 
-        switch = 'check'
 
         sys_prompt  = f"""You are an AI trained to support visual recognition tasks. Your job is to look at the image with s red bounding box around specific object and answer the question about it. You have to analyze the object inside the red bbox and user tells you the name of the object in the input text. Based on this object, you answer the question. 
 Your goal
@@ -172,12 +169,12 @@ Answer : """
 USER: {ambiguous_question} Answer in one or two words.
 ASSISTANT: [/INST]"""
     final_prompt = additional_question_final
-    final_output = generate_output(image_id, ambiguous_question, ambiguous_entity, additional_question_final, entity_id, switch)
+    final_output = generate_output(image_id, ambiguous_question, ambiguous_entity, additional_question_final, entity_id)
 
     return confi, final_output[0], final_output[1], ambiguous_question_answer, context
 
 
-def generate_output(image_id, ambiguous_question, ambiguous_entity, additional_question, entity_id, switch):
+def generate_output(image_id, ambiguous_question, ambiguous_entity, additional_question, entity_id):
     image_path = os.path.join(image_dir, f"{image_id}.jpg")
     try:
         # 이미지 로드 및 RGB로 변환
@@ -200,7 +197,6 @@ def generate_output(image_id, ambiguous_question, ambiguous_entity, additional_q
         return ""
 
 def QA(image_id, ambiguous_question, ambiguous_entity, entity_id, ambiguous_question_answer):
-    switch = 0
     i = 0
 
     # 1번 질문
