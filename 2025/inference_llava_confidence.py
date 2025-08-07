@@ -16,6 +16,9 @@ import time
 import fasttext.util
 
 
+CLIENT_ID = "CLIENT_ID"
+my_api_key = "API_KEY"
+
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 with open('train_sceneGraphs.json', 'r', encoding='utf-8') as file :
