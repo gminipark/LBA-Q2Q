@@ -202,9 +202,20 @@ def generate_output(image_id, ambiguous_question, ambiguous_entity, additional_q
 
 def cossim(ft_model, w1, w2):
     model = ft_model
-    vec1 = np.mean([model.get_word_vector(word) for word in w1.split()], axis=0)
-    vec2 = np.mean([model.get_word_vector(word) for word in w2.split()], axis=0)
-    return np.dot(vec1, vec2) / (np.linalg.norm(vec1) * np.linalg.norm(vec2))
+    vecs1 = [model.get_word_vector(word) for word in w1.split()]
+    vecs2 = [model.get_word_vector(word) for word in w2.split()]
+    
+    if len(vecs1) == 0 or len(vecs2) == 0:
+        return 0.0
+
+    vec1 = np.mean(vecs1, axis=0)
+    vec2 = np.mean(vecs2, axis=0)
+
+    denom = np.linalg.norm(vec1) * np.linalg.norm(vec2)
+    if denom == 0:
+        return 0.0
+
+    return float(np.dot(vec1, vec2) / denom) 
 
 
 
