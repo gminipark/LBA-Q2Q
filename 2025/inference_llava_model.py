@@ -64,7 +64,6 @@ def CoT(image_id, ambiguous_question, ambiguous_entity, entity_id, ambiguous_que
     boxed_img_path = 'boxed_image.jpg'
     base64_image = encode_image(boxed_img_path)
 
-    # 다른 entity box 좌표 설정
     keys = sceneGraphs[str(image_id)]['objects'].keys()
     objects=sceneGraphs[str(image_id)]['objects']
     i = 0
@@ -83,7 +82,7 @@ Examine the given question and determine whether you can confidently answer it.
     else : 
         q_count = max_q + 1
     while q_count < max_q :
-        # 1번 질문
+
         QG_prompt = f"""[INST] <image>
 You receive an original question that has an ambiguous entity difficult to specify.
 The task is to use the provided context, and generate a new yes/no question asking about the {ambiguous_entity} referred to the original question.
@@ -183,15 +182,12 @@ ASSISTANT: [/INST]"""
 def generate_output(image_id, ambiguous_question, ambiguous_entity, additional_question, entity_id):
     image_path = os.path.join(image_dir, f"{image_id}.jpg")
     try:
-        # 이미지 로드 및 RGB로 변환
         image = Image.open(image_path)
 
 
-        # 프로세서 입력값 생성 (이미지를 PIL 이미지 객체가 아닌 텐서로 변환)
         inputs = processor(images=[image], text=additional_question, return_tensors="pt").to(device)
 
         image.save('img.jpg')
-        # 모델 출력 생성
         generated_ids = model.generate(**inputs, max_new_tokens=80, pad_token_id=tokenizer.eos_token_id, temperature=0, do_sample=False, top_k=1, top_p=0)
         generated_text = processor.decode(generated_ids[0], skip_special_tokens=True)
         start = generated_text.find("[/INST]")
@@ -217,7 +213,7 @@ print(f"{max_items}개 test set")
 import time
 import datetime
 total_start_time = time.time()
-output_file = '/workspace/VQA_AQ25/outputs/P_llava_07sure_testset.txt'
+output_file = 'output path.txt'
 correct_li=[]
 wrong_li=[]
 cos_score_li=[]
