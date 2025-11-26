@@ -1,0 +1,333 @@
+import pandas as pd
+import torch
+from transformers import AutoModelForCausalLM, LlamaTokenizer
+from PIL import Image, ImageDraw
+import os
+import transformers
+import json
+import numpy as np
+import cv2
+import pyarrow as pa
+import pyarrow.parquet as pq
+from openai import OpenAI
+import base64
+import requests
+import time
+import fasttext.util
+from accelerate import init_empty_weights, infer_auto_device_map, load_checkpoint_and_dispatch
+
+
+CLIENT_ID = "CLIENT_ID"
+my_api_key= "api key"
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+with open('train_sceneGraphs.json', 'r', encoding='utf-8') as file :
+    sceneGraphs = json.load(file)
+
+csv_path = "test data.csv"
+image_dir = "image dir path"
+
+df = pd.read_csv(csv_path)
+
+tokenizer = LlamaTokenizer.from_pretrained('lmsys/vicuna-7b-v1.5')
+with init_empty_weights():
+    model = AutoModelForCausalLM.from_pretrained(
+        'THUDM/cogvlm-chat-hf',
+        torch_dtype=torch.bfloat16,
+        low_cpu_mem_usage=True,
+        trust_remote_code=True,
+    )
+device_map = infer_auto_device_map(model, max_memory={0:'20GiB',1:'20GiB','cpu':'16GiB'}, no_split_module_classes=['CogVLMDecoderLayer', 'TransformerLayer'])
+model = load_checkpoint_and_dispatch(
+    model,
+    '/root/.cache/huggingface/hub/models--THUDM--cogvlm-chat-hf/snapshots/e29dc3ba206d524bf8efbfc60d80fc4556ab0e3c',
+    device_map=device_map,
+)
+model = model.eval()
+
+fasttext.util.download_model('en', if_exists='ignore')  
+ft_model = fasttext.load_model('cc.en.300.bin') 
+
+def encode_image(image_path):
+    with open(image_path, "rb") as image_file:
+        return base64.b64encode(image_file.read()).decode('utf-8') 
+
+def Boxing(image_id):
+    image_path = os.path.join(image_dir, f"{image_id}.jpg")
+    image = Image.open(image_path)
+    
+    locations = sceneGraphs[str(image_id)]['objects'][str(entity_id)]
+    width, height = sceneGraphs[str(image_id)]['width'], sceneGraphs[str(image_id)]['height']
+    x, y, w, h = locations['x'], locations['y'], locations['w'], locations['h']
+    tar_coordinate = (x, y, w, h)
+
+    image_box = image.copy()
+    draw = ImageDraw.Draw(image_box)
+    draw.rectangle([x, y, x+w, y+h], outline="red",width=3)
+    image_box.save(f'boxed_image.jpg')
+
+
+def CoT(image_id, ambiguous_question, ambiguous_entity, entity_id, ambiguous_question_answer):
+    image_path = os.path.join(image_dir, f"{image_id}.jpg")
+    headers = {
+        'Authorization': f'Client-ID {CLIENT_ID}'
+    }   
+    Boxing(image_id)
+    boxed_img_path = 'boxed_image.jpg'
+    base64_image = encode_image(boxed_img_path)
+
+    keys = sceneGraphs[str(image_id)]['objects'].keys()
+    objects=sceneGraphs[str(image_id)]['objects']
+    i = 0
+    q_count = 0
+    max_q = 3
+    context = ""
+    switch_prompt = f"""Examine the given question and determine whether you can confidently answer it.  
+- If the question is unclear, ambiguous, or you cannot determine the answer, respond with "Yes." 
+- If you can answer with certainty, respond with "No."   
+{ambiguous_question}[/INST]"""
+    
+    switch = generate_output(image_id, ambiguous_question, ambiguous_entity, switch_prompt, entity_id)[0]
+    if 'yes' in switch.lower() :
+        pass
+    else : 
+        q_count = max_q + 1
+    while q_count < max_q :
+
+        if q_count == 0 :
+            QG_prompt = f"""You receive an original question that has an ambiguous entity difficult to specify.
+The task is to use the provided context, and generate a new yes/no question asking about the {ambiguous_entity} referred to the original question.
+In the generated question, you must distinguish the {ambiguous_entity} from the other '{ambiguous_entity}' in the image.
+By answering the new yes/no question, one can identify which '{ambiguous_entity}' is referred to the original question.
+When generating a new question, you can use the attributes of the {ambiguous_entity} or relative location to the other {ambiguous_entity} in the image.
+If you created a question, answer it without saying it directly. If the answer is 'yes', show the question you created, and if it is 'no', do it again.
+Make sure that the yes/no question allows you to distinguish {ambiguous_entity} from the other {ambiguous_entity}.
+
+The original question: '{ambiguous_question}'
+The ambiguous entity: '{ambiguous_entity}'
+
+{context}
+Generated question:"""
+            prompt = QG_prompt
+            generated_question = generate_output(image_id, ambiguous_question, ambiguous_entity, QG_prompt, entity_id)
+            context += f'USER: {generated_question[0]}\n'
+
+        else : 
+            secondary_prompt = f"""You are given an image and an original question that contains an ambiguous entity.
+A yes/no disambiguation question has already been generated and answered, but it was not sufficient to fully identify which '{ambiguous_entity}' the original question refers to.
+
+Your task is to generate a new yes/no question that helps further distinguish the intended '{ambiguous_entity}' in the image.
+Do not repeat or rephrase the previous question. Instead, generate a different question that focuses on a new attribute, relation, or spatial cue related to the '{ambiguous_entity}'.
+
+You can consider the answer to the previous question.
+Use this information to guide your new question, either to refine the scope of ambiguity or to explore a different distinguishing aspect.
+
+Make sure the new yes/no question helps disambiguate the '{ambiguous_entity}' from the others in the image.
+If you generate a question and it is sufficient for disambiguation, answer it (without saying the answer explicitly). If not, try again with a better question.
+
+The original question: '{ambiguous_question}'
+The ambiguous entity: '{ambiguous_entity}'
+{context}
+
+Generated follow-up question:"""
+            prompt = secondary_prompt
+            generated_question = generate_output(image_id, ambiguous_question, ambiguous_entity, secondary_prompt, entity_id)
+            context += f'USER: {generated_question[0]}\n'
+
+
+        gpt_prompt  = f"""You are an AI trained to support visual recognition tasks. Your job is to look at the image with s red bounding box around specific object and answer the question about it. You have to analyze the object inside the red bbox and user tells you the name of the object in the input text. Based on this object, you answer the question. 
+Your goal
+You can focus only on the object within the red bbox. Focus only on objects and properties when answering a question, without mentioning the bounding boxes in the image. 
+Don't generate any new question.
+
+When asked about direction or relative position, think twice and answer correctly.
+If the question includes 'or', answer which one of the two options is correct.
+If the question is wrong, you should correct it.
+If the question is asking about the other {ambiguous_entity} which is not within the red bbox, you should correct it.
+
+In addition, the answer should be simple and concise."""
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {my_api_key}"
+        }
+        payload = {
+            "model": "gpt-4o",  # 이미지 처리가 가능한 모델 사용
+            "messages": [
+                {
+                    "role": "system",
+                    "content": gpt_prompt               },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": f"""Here is a question about the given image. The object in question is "{ambiguous_entity}".
+Original question : {ambiguous_question}
+
+The "{ambiguous_entity}" in the sub-question is in the red box in the image. Answer the sub-question in a short answer. You can also give additional hints, if necessary, to help answer the original question in a sentence.
+sub-question : {generated_question}
+Answer : """
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}
+                        }
+                    ]
+                }
+            ],
+            "max_tokens": 300,
+            "temperature":0.1
+        }
+        response = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload)
+        if response.status_code != 200:
+            print(f"Error: {response.status_code}, {response.text}")
+        try:
+            response_json = response.json() 
+        except requests.exceptions.JSONDecodeError:
+            print(f"[JSON Decode Error] 응답이 JSON 형식이 아닙니다:\n{response.text}")
+            return "Error", "Error", "prompt", ambiguous_question_answer, "No context"
+            
+        if 'choices' not in response_json:
+            print(f"[Response Format Error] 'choices' not found in response: {response_json}")
+            return "Error", "Error", "prompt", ambiguous_question_answer, "No context"
+            
+        case_switch = response_json['choices'][0]['message']['content'].lower()
+
+        # yes인 경우
+        if 'yes' in case_switch :
+            context += f'ASSISTANT: {case_switch}\n'
+            break
+        # no인 경우
+        else : 
+            context += f'ASSISTANT: {case_switch}\n'
+        q_count += 1 
+    additional_question_final = f"""{context}
+
+USER: {ambiguous_question} Answer strictly in only one or two words (e.g., "yes", "right", "car"). Do not repeat the question. Do not use a full sentence.
+ASSISTANT: """
+    final_prompt = additional_question_final
+    final_output = generate_output(image_id, ambiguous_question, ambiguous_entity, additional_question_final, entity_id)
+
+    return switch, final_output[0], final_output[1], ambiguous_question_answer, context
+
+
+def generate_output(image_id, ambiguous_question, ambiguous_entity, additional_question, entity_id):
+    image_path = os.path.join(image_dir, f"{image_id}.jpg")
+
+    image = Image.open(image_path).convert("RGB")
+
+    inputs = model.build_conversation_input_ids(tokenizer, query=additional_question, history=[], images=[image])  
+    inputs = {
+        'input_ids': inputs['input_ids'].unsqueeze(0).to('cuda'),
+        'token_type_ids': inputs['token_type_ids'].unsqueeze(0).to('cuda'),
+        'attention_mask': inputs['attention_mask'].unsqueeze(0).to('cuda'),
+        'images': [[inputs['images'][0].to('cuda').to(torch.bfloat16)]],
+    }
+    gen_kwargs = {"max_length": 2048, "do_sample": False}
+
+    with torch.no_grad():
+        outputs = model.generate(**inputs, **gen_kwargs)
+        outputs = outputs[:, inputs['input_ids'].shape[1]:]
+        generated_text = tokenizer.decode(outputs[0])
+        generated_text = generated_text[:-4]
+    return generated_text, additional_question
+
+
+
+def cossim(ft_model, w1, w2):
+    model = ft_model
+    w1_words = w1.split()
+    w2_words = w2.split()
+
+    if not w1_words or not w2_words:
+        return 0.0  
+
+    vec1 = np.mean([model.get_word_vector(word) for word in w1_words], axis=0)
+    vec2 = np.mean([model.get_word_vector(word) for word in w2_words], axis=0)
+
+    norm1 = np.linalg.norm(vec1)
+    norm2 = np.linalg.norm(vec2)
+
+    if norm1 == 0 or norm2 == 0:
+        return 0.0
+
+    return np.dot(vec1, vec2) / (norm1 * norm2)
+
+max_items = len(df)
+print(f"{max_items}개 test set")
+import time
+import datetime
+total_start_time = time.time()
+output_file = 'output path.txt'
+correct_li=[]
+wrong_li=[]
+cos_score_li=[]
+print("테스트 시작")
+score = 0
+sim_score=0
+import shutil
+with open(output_file,'a', encoding='utf-8') as f :
+    f.write(f"\n")
+    for i in range(max_items):
+        row = df.iloc[i]
+
+        image_id = row['image_id']
+        ambiguous_question = row['ambiguous_question']
+        ambiguous_entity = row['ambiguous_entity']
+        entity_id = row['entity_id']
+        image_path = os.path.join(image_dir, f"{image_id}.jpg")
+        ambiguous_question_answer = row['ambiguous_question_answer']
+        target_question = row['additional_question']
+
+
+        if os.path.exists(image_path):
+            switch, output, prompt, answer, contexts = CoT(image_id, ambiguous_question, ambiguous_entity, entity_id, ambiguous_question_answer)
+            output = output.lower()
+            if answer == output :
+                f.write("\ncorrect")
+                score += 1
+                correct_li.append(i+1)
+            else :
+                f.write("\nwrong")
+                wrong_li.append(i+1)
+            cossim_score = round(cossim(ft_model, answer, output),4)
+            cos_score_li.append(cossim_score)
+            if cossim_score >= 0.7 :
+                sim_score += 1
+
+            print()
+            print(f"{i+1}th")
+            print(contexts[:-1])
+            print(ambiguous_question)
+            print("output",output)
+            print("answer",answer)
+            print("switch",switch)
+            print("score",score)
+            print("cossim score 값", cossim_score)
+            print("cossim score 점수", sim_score)
+            f.write(f"\n{i+1}th")
+            f.write(f"\n이미지 ID: {image_id}")
+            f.write(f"\n엔티티 ID: {entity_id}")
+            f.write(f"\n입력 질문:  {ambiguous_question}")
+            f.write(f"\n스위치: {switch}")
+            f.write(f"\n출력 답: {output}")
+            f.write(f"\n실제 답: {answer}")
+            f.write(f"\n정답 질문: {target_question}")
+            f.write(f"\n{contexts}")
+            f.write(f"\n점수 : {score}")
+            f.write(f"\ncossim 값 : {cossim_score}")
+            f.write(f"\ncossim 점수 : {sim_score}")
+            f.write('\n')
+        else:
+            print(f"이미지 {image_path}이(가) 존재하지 않습니다.")
+            f.write(f"\n이미지 {image_path}이(가) 존재하지 않습니다.")
+
+    print("cossim 평균 :", sum(cos_score_li)/len(cos_score_li))
+    f.write(f"\ncossim 평균 : {sum(cos_score_li)/len(cos_score_li)}")
+    total_elapsed_time = time.time() - total_start_time
+    tot=str(datetime.timedelta(seconds=total_elapsed_time)).split(".")[0]
+    f.write("\n========================================================")
+    f.write(f"\n총 처리 시간 : {tot}, 최종 점수 : {score}, 최종 cossim 점수 : {sim_score}")
+    f.write(f"\nC:{correct_li}")
+    f.write(f"\nW: {wrong_li}")
