@@ -46,7 +46,7 @@ openai==1.51.0
 opencv-python==4.10.0.84
 packaging==24.1
 pandas==2.2.3
-pillow==10.4.0
+pillow==13.0.0
 psutil==6.0.0
 pyarrow==17.0.0
 pydantic==2.9.2
