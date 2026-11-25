@@ -2420,3 +2420,280 @@ def save_transcript_csv(
                 }
             )
 
+
+def parse_relation_json(text: str) -> dict[str, Any]:
+    objects = json_objects_from_text(text.strip())
+    if not objects:
+        raise ValueError(f"Relation JSON parsing failed. Raw output: {text}")
+    return objects[-1]
+
+
+def call_relation_json(
+    agent: QwenSubQuestionAgent, prompt: str, max_new_tokens: int
+) -> dict[str, Any]:
+    raw_output = agent.generate_text(
+        prompt, max_new_tokens=max_new_tokens, enable_thinking=False
+    )
+    try:
+        return parse_relation_json(raw_output)
+    except ValueError:
+        repair_prompt = (
+            prompt
+            + chr(10) * 2
+            + "Your prior response was invalid. Return only the requested JSON object."
+        )
+        repaired_output = agent.generate_text(
+            repair_prompt, max_new_tokens=max_new_tokens, enable_thinking=False
+        )
+        return parse_relation_json(repaired_output)
+
+
+def resolve_canonical_entity_name(
+    raw_name: str,
+    known_entities: Sequence[str],
+    original_question: str = "",
+    final_answer: str = "",
+) -> str | None:
+    cleaned = " ".join(str(raw_name).strip().split())
+    if not cleaned:
+        return None
+    canonical_by_lower = {entity.lower(): entity for entity in known_entities if is_valid_kg_entity_name(entity)}
+    for name in KNOWN_CHARACTER_GENDERS:
+        canonical_by_lower.setdefault(name, name.capitalize())
+    if cleaned.lower() in canonical_by_lower:
+        return canonical_by_lower[cleaned.lower()]
+    if is_valid_kg_entity_name(cleaned):
+        return cleaned
+
+    # If raw_name is an indirect phrase like "the woman whom Dokyung meets" or "the woman he meets",
+    # resolve it using final_answer (excluding entities already named in original_question).
+    question_lower = original_question.lower()
+    answer_lower = final_answer.lower()
+    answer_entities = [
+        canon
+        for lower_name, canon in canonical_by_lower.items()
+        if re.search(rf"\b{re.escape(lower_name)}\b", answer_lower)
+        and not re.search(rf"\b{re.escape(lower_name)}\b", question_lower)
+    ]
+    if len(answer_entities) == 1:
+        return answer_entities[0]
+    return None
+
+
+def build_relation_type_prompt(
+    question: str,
+    answer: str,
+    type_subtype_map: dict[str, list[str]],
+    original_question: str = "",
+    final_answer: str = "",
+    known_entities: Sequence[str] = (),
+) -> str:
+    type_text = chr(10).join(f"- {name}" for name in type_subtype_map)
+    entities_text = ", ".join(known_entities) if known_entities else "Dokyung, Haeyoung1, Haeyoung2, Sukyung, Jinsang, Taejin, Hun, Jiya"
+    context_lines = []
+    if original_question:
+        context_lines.append(f"Original question: {original_question}")
+    if final_answer:
+        context_lines.append(f"Final answer to original question: {final_answer}")
+    context_Lines_str = chr(10).join(context_lines)
+    return f"""You extract explicit character relationships for a DramaQA knowledge graph.
+
+{context_Lines_str}
+Known episode character names:
+{entities_text}
+
+Sub-question:
+{question}
+
+Sub-answer:
+{answer}
+
+Existing Type candidates:
+{type_text or "- none"}
+
+Instructions:
+1. Extract the character-to-character relationship asserted by the confirmed yes/no exchange.
+2. Head and Tail MUST be canonical named characters (e.g., Dokyung, Haeyoung1, Haeyoung2), NEVER descriptive phrases like "the woman", "the woman he meets", or "the unnamed person".
+3. If the sub-question uses an indirect reference (such as "the woman whom Dokyung meets", "the woman he meets", "the person", "he", "she"), resolve it to the canonical character name using the Original question and Final answer above.
+4. Preserve direction Head -> Tail.
+5. Prefer an exact existing Type string when semantically appropriate; otherwise create one concise broad Type (e.g., work, social, romantic, family).
+6. If the sub-question is purely about an object, solo action, or location with no character-to-character relationship, return null for all fields.
+
+Return only one JSON object:
+{{"head": "...", "type": "...", "tail": "..."}}
+or
+{{"head": null, "type": null, "tail": null}}""".strip()
+
+
+def select_relation_type(
+    agent: QwenSubQuestionAgent,
+    question: str,
+    answer: str,
+    type_subtype_map: dict[str, list[str]],
+    original_question: str = "",
+    final_answer: str = "",
+    known_entities: Sequence[str] = (),
+) -> dict[str, str] | None:
+    result = call_relation_json(
+        agent,
+        build_relation_type_prompt(
+            question,
+            answer,
+            type_subtype_map,
+            original_question=original_question,
+            final_answer=final_answer,
+            known_entities=known_entities,
+        ),
+        max_new_tokens=128,
+    )
+    required_keys = {"head", "type", "tail"}
+    if set(result) != required_keys:
+        raise ValueError(f"Unexpected relation Type output: {result}")
+    values = [result[key] for key in ("head", "type", "tail")]
+    if all(value is None for value in values):
+        return None
+    if not all(isinstance(value, str) and value.strip() for value in values):
+        raise ValueError(f"Incomplete relation Type output: {result}")
+    head = resolve_canonical_entity_name(
+        str(result["head"]).strip(),
+        known_entities,
+        original_question=original_question,
+        final_answer=final_answer,
+    )
+    tail = resolve_canonical_entity_name(
+        str(result["tail"]).strip(),
+        known_entities,
+        original_question=original_question,
+        final_answer=final_answer,
+    )
+    rel_type = str(result["type"]).strip()
+    if not head or not tail or head == tail or not rel_type:
+        return None
+    return {"head": head, "type": rel_type, "tail": tail}
+
+
+def build_relation_subtype_prompt(
+    question: str,
+    answer: str,
+    head: str,
+    selected_type: str,
+    tail: str,
+    subtype_candidates: Sequence[str],
+    original_question: str = "",
+    final_answer: str = "",
+) -> str:
+    if subtype_candidates:
+        candidate_text = chr(10).join(f"- {name}" for name in subtype_candidates)
+    else:
+        candidate_text = "- none; create one concise specific Subtype"
+    context_block = ""
+    if original_question or final_answer:
+        context_block = (
+            f"Original question: {original_question}\n"
+            f"Final answer: {final_answer}\n\n"
+        )
+    return f"""Determine the specific Subtype of an explicit DramaQA character relationship.
+
+{context_block}Sub-question:
+{question}
+
+Sub-answer:
+{answer}
+
+Head: {head}
+Tail: {tail}
+Selected Type: {selected_type}
+
+Existing Subtype candidates:
+{candidate_text}
+
+In DramaQA KG, the Subtype under Head -> Tail describes what Tail is to Head (and respects Tail's gender). Prefer an exact existing candidate.
+Only create a new concise Subtype if no candidate fits.
+
+Return only one JSON object:
+{{"subtype": "..."}}""".strip()
+
+
+def select_relation_subtype(
+    agent: QwenSubQuestionAgent,
+    question: str,
+    answer: str,
+    head: str,
+    selected_type: str,
+    tail: str,
+    type_subtype_map: dict[str, list[str]],
+    original_question: str = "",
+    final_answer: str = "",
+) -> tuple[str, list[str]]:
+    candidates = list(type_subtype_map.get(selected_type, []))
+    result = call_relation_json(
+        agent,
+        build_relation_subtype_prompt(
+            question,
+            answer,
+            head,
+            selected_type,
+            tail,
+            candidates,
+            original_question=original_question,
+            final_answer=final_answer,
+        ),
+        max_new_tokens=64,
+    )
+    subtype = result.get("subtype")
+    if not isinstance(subtype, str) or not subtype.strip():
+        raise ValueError(f"Unexpected relation Subtype output: {result}")
+    return subtype.strip(), candidates
+
+
+def extract_kg_quadruple(
+    agent: QwenSubQuestionAgent,
+    question: str,
+    answer: str,
+    episode_id: str,
+    type_subtype_map: dict[str, list[str]],
+    original_question: str = "",
+    final_answer: str = "",
+    known_entities: Sequence[str] = (),
+) -> tuple[dict[str, str] | None, dict[str, Any]]:
+    if normalize_binary_answer(answer) != "Yes":
+        return None, {"reason": "negative_answer"}
+    type_result = select_relation_type(
+        agent,
+        question,
+        answer,
+        type_subtype_map,
+        original_question=original_question,
+        final_answer=final_answer,
+        known_entities=known_entities,
+    )
+    if type_result is None:
+        return None, {"reason": "no_explicit_character_relation"}
+    head = type_result["head"]
+    selected_type = type_result["type"]
+    tail = type_result["tail"]
+    selected_subtype, candidates = select_relation_subtype(
+        agent,
+        question,
+        answer,
+        head,
+        selected_type,
+        tail,
+        type_subtype_map,
+        original_question=original_question,
+        final_answer=final_answer,
+    )
+    result = {
+        "episode": episode_id,
+        "head": head,
+        "type": selected_type,
+        "subtype": selected_subtype,
+        "tail": tail,
+    }
+    info = {
+        "type_is_existing": selected_type in type_subtype_map,
+        "subtype_candidates": candidates,
+        "subtype_is_existing": selected_subtype in candidates,
+    }
+    return result, info
+
