@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
 """Interactive DramaQA sub-questioning with Qwen multimodal models.
 
-The script retrieves relevant DramaQA scenes from the local QA/KG files, selects
-representative frames, and asks a sequence of strictly binary (yes/no)
-sub-questions.  The user's answers are fed back into the conversation until the
-model has enough information to answer the original question.
+Thin CLI entry point over the modular ``q2q`` package. Also re-exports
+pipeline symbols for backward compatibility with ``web_app.py``.
 
 Examples:
     python run.py --show-sample
@@ -17,17 +15,11 @@ Examples:
 from __future__ import annotations
 
 import argparse
-import csv
-import os
 import json
-import math
-import re
 import sys
-from collections import Counter, defaultdict
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict
 from pathlib import Path
-from threading import Event
-from typing import Any, Iterable, Sequence
+from typing import Any, Sequence
 
 from q2q.config import (
     SCRIPT_DIR,
