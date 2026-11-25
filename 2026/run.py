@@ -2905,3 +2905,209 @@ loadGraph();setInterval(loadGraph,5000);
     )
     output_path.write_text(html, encoding="utf-8")
 
+
+def expand_kg_from_dialogue(
+    agent: QwenSubQuestionAgent,
+    source_kg_path: Path,
+    expanded_kg_path: Path,
+    type_subtype_map_path: Path,
+    transcript_csv_path: Path,
+    expansion_log_path: Path,
+    visualization_path: Path,
+    transcript: Sequence[dict[str, str]],
+    episode_id: str,
+    original_question: str = "",
+    final_answer: str = "",
+) -> list[dict[str, Any]]:
+    working_source = (
+        expanded_kg_path if expanded_kg_path.exists() else source_kg_path
+    )
+    base_kg_data = load_json(source_kg_path)
+    if not isinstance(base_kg_data, list):
+        raise ValueError(f"KG root must be a list: {source_kg_path}")
+    kg_data = load_json(working_source)
+    if not isinstance(kg_data, list):
+        raise ValueError(f"KG root must be a list: {working_source}")
+    sanitize_kg_episodes(kg_data)
+    baseline_signature = kg_graph_signature(base_kg_data)
+    type_subtype_map = build_type_subtype_map(kg_data)
+    target_episode = find_target_episode(kg_data, episode_id)
+    known_entities_set: set[str] = set()
+    ep_knowledge = target_episode.get("episode_knowledge", {})
+    if isinstance(ep_knowledge, dict):
+        for ent in ep_knowledge:
+            if is_valid_kg_entity_name(str(ent)):
+                known_entities_set.add(str(ent))
+    for scene_wrapper in target_episode.get("scene_level", []):
+        if isinstance(scene_wrapper, dict):
+            for payload in scene_wrapper.values():
+                if isinstance(payload, dict) and isinstance(payload.get("scene_knowledge"), dict):
+                    for ent in payload["scene_knowledge"]:
+                        if is_valid_kg_entity_name(str(ent)):
+                            known_entities_set.add(str(ent))
+    known_entities = sorted(known_entities_set)
+
+    effective_question = original_question or getattr(agent, "original_question", "") or ""
+    effective_final_answer = (
+        final_answer or getattr(agent, "reference_answer", "") or ""
+    )
+    results: list[dict[str, Any]] = []
+    history_turns: list[dict[str, Any]] = []
+    save_transcript_csv(transcript_csv_path, transcript, episode_id)
+
+    for turn in transcript:
+        question = str(turn.get("sub_question", "")).strip()
+        answer = str(turn.get("answer", "")).strip()
+        if not question or not answer:
+            continue
+        try:
+            quadruple, selection_info = extract_kg_quadruple(
+                agent,
+                question,
+                answer,
+                episode_id,
+                type_subtype_map,
+                original_question=effective_question,
+                final_answer=effective_final_answer,
+                known_entities=known_entities,
+            )
+            if quadruple is None:
+                results.append(
+                    {
+                        "question": question,
+                        "answer": answer,
+                        "status": "skipped",
+                        "selection_info": selection_info,
+                    }
+                )
+                history_turns.append(
+                    {
+                        "sub_question": question,
+                        "answer": answer,
+                        "quadruple": None,
+                    }
+                )
+                continue
+            status = add_quadruple_to_episode(
+                target_episode,
+                quadruple["head"],
+                quadruple["type"],
+                quadruple["subtype"],
+                quadruple["tail"],
+            )
+            subtypes = type_subtype_map.setdefault(quadruple["type"], [])
+            if quadruple["subtype"] not in subtypes:
+                subtypes.append(quadruple["subtype"])
+                subtypes.sort()
+            results.append(
+                {
+                    "question": question,
+                    "answer": answer,
+                    "status": status,
+                    "quadruple": quadruple,
+                    "selection_info": selection_info,
+                }
+            )
+            history_turns.append(
+                {
+                    "sub_question": question,
+                    "answer": answer,
+                    "quadruple": quadruple,
+                }
+            )
+        except GenerationCancelled:
+            raise
+        except (RuntimeError, ValueError) as exc:
+            print(
+                f"[kg-expansion] Failed for sub-question: {exc}",
+                file=sys.stderr,
+            )
+            results.append(
+                {
+                    "question": question,
+                    "answer": answer,
+                    "status": "error",
+                    "error": str(exc),
+                }
+            )
+            history_turns.append(
+                {
+                    "sub_question": question,
+                    "answer": answer,
+                    "quadruple": None,
+                }
+            )
+
+    if history_turns:
+        history = target_episode.setdefault("expanded_dialogue_history", [])
+        if not isinstance(history, list):
+            history = []
+            target_episode["expanded_dialogue_history"] = history
+        norm_orig = normalize_question(effective_question)
+        updated_existing = False
+        for existing in history:
+            if (
+                isinstance(existing, dict)
+                and norm_orig
+                and normalize_question(str(existing.get("original_question", ""))) == norm_orig
+            ):
+                existing_turns = existing.setdefault("turns", [])
+                if isinstance(existing_turns, list):
+                    seen_qs = {
+                        normalize_question(str(t.get("sub_question", "")))
+                        for t in existing_turns
+                        if isinstance(t, dict)
+                    }
+                    for new_t in history_turns:
+                        if normalize_question(new_t["sub_question"]) not in seen_qs:
+                            existing_turns.append(new_t)
+                if effective_final_answer:
+                    existing["final_answer"] = effective_final_answer
+                updated_existing = True
+                break
+        if not updated_existing:
+            history.append(
+                {
+                    "original_question": effective_question,
+                    "final_answer": effective_final_answer,
+                    "episode": episode_id,
+                    "turns": history_turns,
+                }
+            )
+
+    stop_event = getattr(agent, "stop_event", None)
+    if stop_event is not None and stop_event.is_set():
+        raise GenerationCancelled("KG expansion was cancelled by the user.")
+    write_json_atomic(expanded_kg_path, kg_data)
+    write_json_atomic(type_subtype_map_path, type_subtype_map)
+    combined_log: list[dict[str, Any]] = []
+    if expansion_log_path.exists():
+        try:
+            existing_log = load_json(expansion_log_path)
+            if isinstance(existing_log, list):
+                combined_log.extend(
+                    item for item in existing_log if isinstance(item, dict)
+                )
+        except Exception:
+            pass
+    existing_keys = {
+        (
+            normalize_question(str(item.get("question", ""))),
+            json.dumps(item.get("quadruple"), sort_keys=True, ensure_ascii=False),
+        )
+        for item in combined_log
+    }
+    for item in results:
+        key = (
+            normalize_question(str(item.get("question", ""))),
+            json.dumps(item.get("quadruple"), sort_keys=True, ensure_ascii=False),
+        )
+        if key not in existing_keys:
+            combined_log.append(item)
+            existing_keys.add(key)
+    write_json_atomic(expansion_log_path, combined_log)
+    write_kg_visualization_html(
+        expanded_kg_path, visualization_path, baseline_signature
+    )
+    return results
+
