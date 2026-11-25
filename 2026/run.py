@@ -232,3 +232,62 @@ def format_gender_label(gender: str | None) -> str:
         return "female (woman, she/her)"
     return "unknown"
 
+
+@dataclass
+class QASample:
+    question: str
+    answer: str | None
+    scene_ids: list[str]
+    source: str
+    shot_range: tuple[int, int] | None = None
+
+
+@dataclass
+class SceneRecord:
+    scene_id: str
+    episode_key: str
+    knowledge: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class Decision:
+    done: bool
+    sub_question: str | None = None
+    final_answer: str | None = None
+    evidence: list[str] = field(default_factory=list)
+
+class GenerationCancelled(RuntimeError):
+    """Raised when a web session requests cooperative generation cancellation."""
+
+
+def load_json(path: Path) -> Any:
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            return json.load(handle)
+    except FileNotFoundError as exc:
+        raise FileNotFoundError(f"Required data file was not found: {path}") from exc
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON in {path}: {exc}") from exc
+
+
+def tokenize(text: str) -> list[str]:
+    return [token.lower() for token in TOKEN_RE.findall(text)]
+
+
+def normalize_question(question: str) -> str:
+    return " ".join(tokenize(question))
+
+
+def unique_in_order(values: Iterable[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        if value and value not in seen:
+            seen.add(value)
+            result.append(value)
+    return result
+
+
+def episode_key_from_id(item_id: str) -> str:
+    return item_id.split("_", 1)[0]
+
