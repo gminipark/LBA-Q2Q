@@ -29,122 +29,27 @@ from pathlib import Path
 from threading import Event
 from typing import Any, Iterable, Sequence
 
-
-SCRIPT_DIR = Path(__file__).resolve().parent
-DEFAULT_DATASET_ROOT = (
-    SCRIPT_DIR / "DramaQA-20260727T060423Z-1-001" / "DramaQA"
+from q2q.config import (
+    SCRIPT_DIR,
+    DEFAULT_DATASET_ROOT,
+    DEFAULT_KG_PATH,
+    DEFAULT_QA_DIR,
+    DEFAULT_MODEL,
+    DEFAULT_OUTPUT_DIR,
+    DEFAULT_TYPE_SUBTYPE_MAP_PATH,
+    DEFAULT_TRANSCRIPT_CSV_PATH,
+    DEFAULT_EXPANDED_KG_PATH,
+    DEFAULT_EXPANSION_LOG_PATH,
+    DEFAULT_VISUALIZATION_PATH,
+    SAMPLE_QUESTION,
+    TOKEN_RE,
+    IMAGE_SUFFIXES,
+    ENGLISH_WH_PREFIXES,
+    ENGLISH_BINARY_PREFIXES,
+    KNOWN_CHARACTER_GENDERS,
+    MALE_RELATION_SUBTYPES,
+    FEMALE_RELATION_SUBTYPES,
 )
-DEFAULT_KG_PATH = (
-    DEFAULT_DATASET_ROOT / "KG" / "AnotherMissOhQA_test_episode_scene_kg.json"
-)
-DEFAULT_QA_DIR = DEFAULT_DATASET_ROOT / "QA"
-DEFAULT_MODEL = "Qwen/Qwen3.8-27B"
-DEFAULT_OUTPUT_DIR = SCRIPT_DIR / "output"
-DEFAULT_TYPE_SUBTYPE_MAP_PATH = DEFAULT_OUTPUT_DIR / "type_subtype_map.json"
-DEFAULT_TRANSCRIPT_CSV_PATH = DEFAULT_OUTPUT_DIR / "input_example.csv"
-DEFAULT_EXPANDED_KG_PATH = DEFAULT_OUTPUT_DIR / "expanded_kg.json"
-DEFAULT_EXPANSION_LOG_PATH = DEFAULT_OUTPUT_DIR / "kg_expansion_log.json"
-DEFAULT_VISUALIZATION_PATH = (
-    DEFAULT_OUTPUT_DIR / "visualization" / "expanded_kg.html"
-)
-
-SAMPLE_QUESTION = (
-    "Who does Dokyung run into when he goes to Haeyoung1's company with a "
-    "bouquet of flowers?"
-)
-
-TOKEN_RE = re.compile(r"[A-Za-z0-9]+")
-IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
-ENGLISH_WH_PREFIXES = (
-    "what ",
-    "where ",
-    "when ",
-    "who ",
-    "whom ",
-    "whose ",
-    "why ",
-    "how ",
-    "which ",
-)
-ENGLISH_BINARY_PREFIXES = (
-    "am ",
-    "is ",
-    "are ",
-    "was ",
-    "were ",
-    "do ",
-    "does ",
-    "did ",
-    "has ",
-    "have ",
-    "had ",
-    "can ",
-    "could ",
-    "will ",
-    "would ",
-    "shall ",
-    "should ",
-    "may ",
-    "might ",
-    "must ",
-)
-
-KNOWN_CHARACTER_GENDERS: dict[str, str] = {
-    "dokyung": "male",
-    "taejin": "male",
-    "jinsang": "male",
-    "hun": "male",
-    "kyungsu": "male",
-    "chairman": "male",
-    "soontack": "male",
-    "sangseok": "male",
-    "gitae": "male",
-    "yijoon": "male",
-    "sungjin": "male",
-    "chansu": "male",
-    "jungtae": "male",
-    "haeyoung1": "female",
-    "haeyoung2": "female",
-    "sukyung": "female",
-    "jiya": "female",
-    "heeran": "female",
-    "deogi": "female",
-    "anna": "female",
-    "jeongsuk": "female",
-    "youngji": "female",
-    "bora": "female",
-    "seohee": "female",
-}
-
-MALE_RELATION_SUBTYPES = {
-    "boyfriend",
-    "ex-boyfriend",
-    "husband",
-    "ex-husband",
-    "son",
-    "brother",
-    "stepbrother",
-    "father",
-    "uncle",
-    "nephew",
-    "grandfather",
-    "groom",
-}
-
-FEMALE_RELATION_SUBTYPES = {
-    "girlfriend",
-    "ex-girlfriend",
-    "wife",
-    "ex-wife",
-    "daughter",
-    "sister",
-    "stepsister",
-    "mother",
-    "aunt",
-    "niece",
-    "grandmother",
-    "bride",
-}
 
 
 def is_valid_kg_entity_name(name: str) -> bool:
@@ -194,6 +99,7 @@ def is_valid_kg_entity_name(name: str) -> bool:
     return bool(re.fullmatch(r"[A-Z][A-Za-z0-9_.-]*(?: [A-Z][A-Za-z0-9_.-]*)*", cleaned))
 
 
+
 def sanitize_kg_episodes(raw_episodes: Sequence[dict[str, Any]]) -> bool:
     changed = False
     for episode in raw_episodes:
@@ -225,12 +131,14 @@ def sanitize_kg_episodes(raw_episodes: Sequence[dict[str, Any]]) -> bool:
     return changed
 
 
+
 def format_gender_label(gender: str | None) -> str:
     if gender == "male":
         return "male (man, he/him)"
     if gender == "female":
         return "female (woman, she/her)"
     return "unknown"
+
 
 
 @dataclass
@@ -242,11 +150,13 @@ class QASample:
     shot_range: tuple[int, int] | None = None
 
 
+
 @dataclass
 class SceneRecord:
     scene_id: str
     episode_key: str
     knowledge: dict[str, Any] = field(default_factory=dict)
+
 
 
 @dataclass
@@ -256,8 +166,11 @@ class Decision:
     final_answer: str | None = None
     evidence: list[str] = field(default_factory=list)
 
+
+
 class GenerationCancelled(RuntimeError):
     """Raised when a web session requests cooperative generation cancellation."""
+
 
 
 def load_json(path: Path) -> Any:
@@ -270,12 +183,15 @@ def load_json(path: Path) -> Any:
         raise ValueError(f"Invalid JSON in {path}: {exc}") from exc
 
 
+
 def tokenize(text: str) -> list[str]:
     return [token.lower() for token in TOKEN_RE.findall(text)]
 
 
+
 def normalize_question(question: str) -> str:
     return " ".join(tokenize(question))
+
 
 
 def unique_in_order(values: Iterable[str]) -> list[str]:
@@ -288,8 +204,10 @@ def unique_in_order(values: Iterable[str]) -> list[str]:
     return result
 
 
+
 def episode_key_from_id(item_id: str) -> str:
     return item_id.split("_", 1)[0]
+
 
 
 class DramaQAKnowledgeBase:
@@ -1039,6 +957,7 @@ class DramaQAKnowledgeBase:
         return json.dumps(payload, ensure_ascii=False, indent=2)
 
 
+
 def resolve_image_root(requested: Path | None) -> Path:
     candidates: list[Path] = []
     if requested is not None:
@@ -1063,9 +982,11 @@ def resolve_image_root(requested: Path | None) -> Path:
     raise FileNotFoundError(f"Could not find the image root. Searched:\n  - {searched}")
 
 
+
 def natural_sort_key(path: Path) -> tuple[Any, ...]:
     parts = re.split(r"(\d+)", path.name)
     return tuple(int(part) if part.isdigit() else part.lower() for part in parts)
+
 
 
 def evenly_spaced(items: Sequence[Path], count: int) -> list[Path]:
@@ -1078,6 +999,7 @@ def evenly_spaced(items: Sequence[Path], count: int) -> list[Path]:
     indices = [round(index * (len(items) - 1) / (count - 1)) for index in range(count)]
     unique_indices = list(dict.fromkeys(indices))
     return [items[index] for index in unique_indices]
+
 
 
 def representative_frames(
@@ -1149,6 +1071,7 @@ def representative_frames(
     return selected
 
 
+
 def is_plausible_english_question(text: str) -> bool:
     question = " ".join(text.strip().split())
     if not question.isascii() or not 6 <= len(question) <= 220:
@@ -1174,6 +1097,7 @@ def is_yes_no_question(text: str) -> bool:
     if lowered.startswith(ENGLISH_BINARY_PREFIXES):
         return True
     return False
+
 
 
 def rewrite_ambiguous_entity_clauses(
@@ -1224,6 +1148,7 @@ def rewrite_ambiguous_entity_clauses(
     return " ".join(question.split())
 
 
+
 def normalize_model_sub_question(
     text: str,
     entity_genders: dict[str, str] | None = None,
@@ -1259,6 +1184,7 @@ def normalize_model_sub_question(
     return candidate if is_yes_no_question(candidate) else None
 
 
+
 def safe_fallback_sub_question(asked_questions: Sequence[str]) -> str:
     candidates = (
         "Does the selected visual evidence show the relevant event?",
@@ -1289,6 +1215,7 @@ def json_objects_from_text(text: str) -> list[dict[str, Any]]:
         if isinstance(value, dict):
             objects.append(value)
     return objects
+
 
 
 def parse_decision(text: str) -> Decision:
@@ -1327,6 +1254,7 @@ def parse_decision(text: str) -> Decision:
     raise ValueError("The model response did not contain a valid decision JSON object.")
 
 
+
 def meaningful_tokens(text: str) -> set[str]:
     stopwords = {
         "a", "an", "the", "and", "or", "but", "as", "at", "by", "for",
@@ -1338,6 +1266,7 @@ def meaningful_tokens(text: str) -> set[str]:
         "that", "these", "those", "there", "then", "be", "been", "being",
     }
     return {token for token in tokenize(text) if len(token) > 1 and token not in stopwords}
+
 
 
 def kg_entity_consistency_reason(
@@ -1417,6 +1346,7 @@ def kg_entity_consistency_reason(
     return None
 
 
+
 def already_known_in_kg_reason(
     sub_question: str,
     prior_kg_questions: Sequence[str] = (),
@@ -1472,6 +1402,7 @@ def already_known_in_kg_reason(
                 f"Do not re-ask a sub-question to verify a relation already in the KG. {finish_hint}"
             )
     return None
+
 
 
 def direct_answer_probe_reason(
@@ -1531,6 +1462,7 @@ def direct_answer_probe_reason(
                 "Ask an upstream evidence question instead of proposing its answer."
             )
     return None
+
 
 
 def validate_decision(
@@ -1596,6 +1528,7 @@ def validate_decision(
     return None
 
 
+
 def build_turn_followup_prompt(
     answer: str,
     remaining: int,
@@ -1646,8 +1579,10 @@ def build_turn_followup_prompt(
     )
 
 
+
 def text_content(text: str) -> list[dict[str, str]]:
     return [{"type": "text", "text": text}]
+
 
 
 def system_prompt(min_subquestions: int, max_subquestions: int) -> str:
@@ -1718,6 +1653,7 @@ For a sub-question, return exactly:
 When enough information is available, return exactly:
 {{"done": true, "final_answer": "...", "evidence": ["short evidence item"]}}
 """
+
 
 
 def initial_messages(
@@ -1800,6 +1736,7 @@ def initial_messages(
         },
         {"role": "user", "content": user_content},
     ]
+
 
 
 class QwenSubQuestionAgent:
@@ -2351,6 +2288,7 @@ class QwenSubQuestionAgent:
         return repaired
 
 
+
 def write_json_atomic(path: Path, value: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary_path = path.with_name(path.name + ".tmp")
@@ -2358,6 +2296,7 @@ def write_json_atomic(path: Path, value: Any) -> None:
         json.dump(value, handle, ensure_ascii=False, indent=2)
         handle.write(chr(10))
     temporary_path.replace(path)
+
 
 
 def build_type_subtype_map(kg_data: Sequence[dict[str, Any]]) -> dict[str, list[str]]:
@@ -2401,6 +2340,7 @@ def build_type_subtype_map(kg_data: Sequence[dict[str, Any]]) -> dict[str, list[
     }
 
 
+
 def save_transcript_csv(
     path: Path, transcript: Sequence[dict[str, str]], episode_id: str
 ) -> None:
@@ -2421,11 +2361,13 @@ def save_transcript_csv(
             )
 
 
+
 def parse_relation_json(text: str) -> dict[str, Any]:
     objects = json_objects_from_text(text.strip())
     if not objects:
         raise ValueError(f"Relation JSON parsing failed. Raw output: {text}")
     return objects[-1]
+
 
 
 def call_relation_json(
@@ -2446,6 +2388,7 @@ def call_relation_json(
             repair_prompt, max_new_tokens=max_new_tokens, enable_thinking=False
         )
         return parse_relation_json(repaired_output)
+
 
 
 def resolve_canonical_entity_name(
@@ -2478,6 +2421,7 @@ def resolve_canonical_entity_name(
     if len(answer_entities) == 1:
         return answer_entities[0]
     return None
+
 
 
 def build_relation_type_prompt(
@@ -2523,6 +2467,7 @@ Return only one JSON object:
 {{"head": "...", "type": "...", "tail": "..."}}
 or
 {{"head": null, "type": null, "tail": null}}""".strip()
+
 
 
 def select_relation_type(
@@ -2572,6 +2517,7 @@ def select_relation_type(
     return {"head": head, "type": rel_type, "tail": tail}
 
 
+
 def build_relation_subtype_prompt(
     question: str,
     answer: str,
@@ -2614,6 +2560,7 @@ Return only one JSON object:
 {{"subtype": "..."}}""".strip()
 
 
+
 def select_relation_subtype(
     agent: QwenSubQuestionAgent,
     question: str,
@@ -2644,6 +2591,7 @@ def select_relation_subtype(
     if not isinstance(subtype, str) or not subtype.strip():
         raise ValueError(f"Unexpected relation Subtype output: {result}")
     return subtype.strip(), candidates
+
 
 
 def extract_kg_quadruple(
@@ -2710,6 +2658,7 @@ def ensure_episode_entity(
     episode_knowledge[entity].setdefault("relationships", {})
 
 
+
 def relation_pairs(relation_info: dict[str, Any]) -> list[tuple[str, str]]:
     relation_type = relation_info.get("type")
     subtype = relation_info.get("subtype")
@@ -2726,6 +2675,7 @@ def relation_pairs(relation_info: dict[str, Any]) -> list[tuple[str, str]]:
         for relation_name, subtype_name in zip(relation_types, subtypes)
         if relation_name is not None and subtype_name is not None
     ]
+
 
 
 def add_quadruple_to_episode(
@@ -2759,6 +2709,7 @@ def add_quadruple_to_episode(
     return "added_additional_relation"
 
 
+
 def find_target_episode(
     kg_data: Sequence[dict[str, Any]], episode_id: str
 ) -> dict[str, Any]:
@@ -2768,6 +2719,7 @@ def find_target_episode(
         if stored_id == episode_id or episode_key_from_id(stored_id) == requested_key:
             return episode
     raise ValueError(f"Episode not found for KG expansion: {episode_id}")
+
 
 
 def kg_graph_signature(
@@ -2800,6 +2752,7 @@ def kg_graph_signature(
                         )
                     )
     return {"nodes": sorted(nodes), "edges": sorted(edges)}
+
 
 
 def write_kg_visualization_html(
@@ -2904,6 +2857,7 @@ loadGraph();setInterval(loadGraph,5000);
         "__BASELINE_EDGES__", json.dumps(baseline_signature["edges"])
     )
     output_path.write_text(html, encoding="utf-8")
+
 
 
 def expand_kg_from_dialogue(
@@ -3124,6 +3078,7 @@ def normalize_binary_answer(value: str) -> str | None:
     return None
 
 
+
 def read_binary_answer(prefilled: list[str]) -> str | None:
     while True:
         if prefilled:
@@ -3140,6 +3095,7 @@ def read_binary_answer(prefilled: list[str]) -> str | None:
         if answer:
             return answer
         print("Please answer only yes/no.")
+
 
 
 def run_dialogue(
@@ -3230,6 +3186,7 @@ def run_dialogue(
     return transcript, final_decision
 
 
+
 def print_sample(kb: DramaQAKnowledgeBase, image_root: Path, max_images: int) -> None:
     sample = kb.find_exact_qa(SAMPLE_QUESTION)
     if sample is None:
@@ -3246,6 +3203,7 @@ def print_sample(kb: DramaQAKnowledgeBase, image_root: Path, max_images: int) ->
     print("  Agent: Does the woman whom Dokyung meets work at the same company as Haeyoung1?")
     print("  User: Yes")
     print("  Final answer: Haeyoung2")
+
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -3333,6 +3291,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+
 def validate_args(args: argparse.Namespace) -> None:
     if args.top_scenes < 1:
         raise ValueError("--top-scenes must be at least 1.")
@@ -3354,6 +3313,7 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--top-k cannot be negative.")
 
 
+
 def compute_effective_min_subquestions(
     requested_min: int, prior_knowledge: dict[str, Any]
 ) -> int:
@@ -3367,6 +3327,7 @@ def compute_effective_min_subquestions(
     if same_q_turns > 0:
         return max(0, requested_min - same_q_turns)
     return requested_min
+
 
 
 def main() -> int:
