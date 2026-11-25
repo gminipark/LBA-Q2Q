@@ -6,7 +6,19 @@ Interactive multimodal yes/no sub-questioning and dialogue-driven Knowledge Grap
 
 ```bash
 2026/
-├── run.py                  # Core CLI pipeline: DramaQA KB retrieval, VLM sub-questioning, KG expansion & HTML visualization
+├── run.py                  # Thin CLI entry point (and backward-compatible re-exports for web_app.py)
+├── q2q/                    # Modular DramaQA Q2Q and KG expansion package
+│   ├── __init__.py
+│   ├── config.py           # Path defaults, constants, character gender & relation subtype configs
+│   ├── schemas.py          # Core dataclasses, JSON/file helpers, text & relation utilities
+│   ├── kb.py               # DramaQAKnowledgeBase loading, KG sanitization & scene retrieval
+│   ├── frames.py           # DramaQA video frame discovery and representative frame sampling
+│   ├── validation.py       # Sub-question normalization, Decision parsing & KG validation guards
+│   ├── prompts.py          # System and multi-turn prompt builders
+│   ├── agent.py            # QwenSubQuestionAgent multimodal VLM wrapper
+│   ├── visualization.py    # Relation schema map, transcript CSV & interactive HTML KG visualization
+│   ├── kg_expansion.py     # Dialogue-driven relation extraction and episode KG expansion
+│   └── dialogue.py         # Interactive CLI binary dialogue runner and sample preview
 ├── web_app.py              # FastAPI backend for multi-turn chat sessions, GPU/memory management, and KG expansion
 ├── web/
 │   └── index.html          # Interactive browser UI for dialogue, representative scene frames, and KG viewer
