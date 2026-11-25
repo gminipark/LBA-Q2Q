@@ -344,3 +344,183 @@ class SessionAgentContext:
             MODEL_MANAGER.mark_used()
         MODEL_LOCK.release()
 
+
+def model_config_payload() -> dict[str, Any]:
+    return {
+        "gpu_ids": RUNTIME_GPU_IDS,
+        "max_gpu_memory_gib": RUNTIME_MAX_GPU_MEMORY_GIB,
+        "max_cpu_memory_gib": RUNTIME_MAX_CPU_MEMORY_GIB,
+        "gpu_idle_timeout_minutes": RUNTIME_GPU_IDLE_TIMEOUT_MINUTES,
+        "last_used_at": MODEL_MANAGER.last_used_at,
+        "last_unloaded_at": MODEL_MANAGER.last_unloaded_at,
+        "last_unload_reason": MODEL_MANAGER.last_unload_reason,
+        "locked": MODEL_MANAGER.loaded,
+    }
+
+
+def configure_model_limits(
+    gpu_ids: str | None,
+    max_gpu_memory_gib: float | None,
+    max_cpu_memory_gib: float | None,
+    gpu_idle_timeout_minutes: float | None,
+) -> None:
+    global RUNTIME_GPU_IDS, RUNTIME_MAX_GPU_MEMORY_GIB
+    global RUNTIME_MAX_CPU_MEMORY_GIB, RUNTIME_GPU_IDLE_TIMEOUT_MINUTES
+
+    normalized_gpu_ids = RUNTIME_GPU_IDS
+    if gpu_ids is not None:
+        raw_ids = [item.strip() for item in gpu_ids.split(",") if item.strip()]
+        if not raw_ids or any(not item.isdigit() for item in raw_ids):
+            raise HTTPException(
+                status_code=422,
+                detail="GPU IDs must be comma-separated integers such as 0 or 0,1.",
+            )
+        if len(set(raw_ids)) != len(raw_ids):
+            raise HTTPException(status_code=422, detail="GPU IDs must be unique.")
+        normalized_gpu_ids = ",".join(raw_ids)
+
+    desired_gpu_memory = (
+        max_gpu_memory_gib
+        if max_gpu_memory_gib is not None
+        else RUNTIME_MAX_GPU_MEMORY_GIB
+    )
+    desired_cpu_memory = (
+        max_cpu_memory_gib
+        if max_cpu_memory_gib is not None
+        else RUNTIME_MAX_CPU_MEMORY_GIB
+    )
+    desired_idle_timeout = (
+        gpu_idle_timeout_minutes
+        if gpu_idle_timeout_minutes is not None
+        else RUNTIME_GPU_IDLE_TIMEOUT_MINUTES
+    )
+    placement_changed = (
+        normalized_gpu_ids != RUNTIME_GPU_IDS
+        or desired_gpu_memory != RUNTIME_MAX_GPU_MEMORY_GIB
+        or desired_cpu_memory != RUNTIME_MAX_CPU_MEMORY_GIB
+    )
+    with MODEL_LOCK:
+        if MODEL_MANAGER.loaded and placement_changed:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "The model is already loaded. Unload it before changing GPU "
+                    "or memory limits."
+                ),
+            )
+        if normalized_gpu_ids is not None:
+            os.environ["CUDA_VISIBLE_DEVICES"] = normalized_gpu_ids
+        RUNTIME_GPU_IDS = normalized_gpu_ids
+        RUNTIME_MAX_GPU_MEMORY_GIB = desired_gpu_memory
+        RUNTIME_MAX_CPU_MEMORY_GIB = desired_cpu_memory
+        RUNTIME_GPU_IDLE_TIMEOUT_MINUTES = max(0.0, desired_idle_timeout)
+
+
+def has_open_dialogue_sessions() -> bool:
+    open_states = {"prepared", "generating", "awaiting_answer", "expanding", "complete"}
+    with SESSIONS_LOCK:
+        return any(session.status in open_states for session in SESSIONS.values())
+
+
+def unload_model(reason: str, require_idle: bool = False) -> tuple[bool, str]:
+    if require_idle and has_open_dialogue_sessions():
+        return False, "open_dialogue"
+    if not MODEL_LOCK.acquire(blocking=False):
+        return False, "busy"
+    try:
+        if MODEL_MANAGER.agent is None:
+            return True, "already_unloaded"
+        if require_idle:
+            timeout_seconds = RUNTIME_GPU_IDLE_TIMEOUT_MINUTES * 60.0
+            if timeout_seconds <= 0:
+                return False, "disabled"
+            if time.time() - MODEL_MANAGER.last_used_at < timeout_seconds:
+                return False, "not_idle"
+        agent = MODEL_MANAGER.agent
+        MODEL_MANAGER.agent = None
+        agent.stop_event = None
+        if hasattr(agent, "model"):
+            agent.model = None
+        if hasattr(agent, "processor"):
+            agent.processor = None
+        del agent
+        gc.collect()
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                torch.cuda.ipc_collect()
+        except (ImportError, RuntimeError, AssertionError):
+            pass
+        MODEL_MANAGER.last_unloaded_at = time.time()
+        MODEL_MANAGER.last_unload_reason = reason
+        return True, "unloaded"
+    finally:
+        MODEL_LOCK.release()
+
+
+async def idle_unload_watcher() -> None:
+    while True:
+        timeout_minutes = RUNTIME_GPU_IDLE_TIMEOUT_MINUTES
+        interval = 30.0 if timeout_minutes <= 0 else min(30.0, max(2.0, timeout_minutes * 15.0))
+        await asyncio.sleep(interval)
+        if not MODEL_MANAGER.loaded or timeout_minutes <= 0:
+            continue
+        if time.time() - MODEL_MANAGER.last_used_at < timeout_minutes * 60.0:
+            continue
+        unload_model("idle_timeout", require_idle=True)
+
+
+def reset_expanded_kg_outputs() -> None:
+    """Reset expanded KG files to the clean base KG when web_app starts or stops."""
+    global KNOWLEDGE_BASE, KNOWLEDGE_BASE_MTIME_NS
+    with KB_LOCK:
+        try:
+            if KG_PATH.exists():
+                base_data = pipeline.load_json(KG_PATH)
+                if isinstance(base_data, list):
+                    pipeline.sanitize_kg_episodes(base_data)
+                    pipeline.write_json_atomic(EXPANDED_KG_PATH, base_data)
+                    type_map = pipeline.build_type_subtype_map(base_data)
+                    pipeline.write_json_atomic(TYPE_SUBTYPE_MAP_PATH, type_map)
+                    baseline_sig = pipeline.kg_graph_signature(base_data)
+                    pipeline.write_kg_visualization_html(
+                        EXPANDED_KG_PATH, VISUALIZATION_PATH, baseline_sig
+                    )
+            pipeline.write_json_atomic(EXPANSION_LOG_PATH, [])
+            pipeline.save_transcript_csv(TRANSCRIPT_CSV_PATH, [], "")
+        except Exception:
+            pass
+        KNOWLEDGE_BASE = None
+        KNOWLEDGE_BASE_MTIME_NS = None
+
+
+atexit.register(reset_expanded_kg_outputs)
+
+
+@asynccontextmanager
+async def app_lifespan(_: FastAPI):
+    reset_expanded_kg_outputs()
+    get_knowledge_base()
+    watcher = asyncio.create_task(idle_unload_watcher())
+    try:
+        yield
+    finally:
+        watcher.cancel()
+        try:
+            await watcher
+        except asyncio.CancelledError:
+            pass
+        reset_expanded_kg_outputs()
+
+
+
+app = FastAPI(
+    title="DramaQA Q2Q KG Lab",
+    version="1.0.0",
+    description="Interactive yes/no sub-questioning and KG expansion.",
+    lifespan=app_lifespan,
+)
+app.mount("/output", StaticFiles(directory=str(OUTPUT_DIR)), name="output")
+
