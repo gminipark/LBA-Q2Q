@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Sequence
+from typing import Any, Sequence
 
 from q2q.config import DEFAULT_DATASET_ROOT, IMAGE_SUFFIXES, SCRIPT_DIR
 from q2q.schemas import SceneRecord
