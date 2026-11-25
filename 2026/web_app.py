@@ -190,3 +190,157 @@ class ModelManager:
         self.mark_used()
         return self.agent
 
+
+SESSIONS: dict[str, WebDialogueSession] = {}
+SESSIONS_LOCK = threading.RLock()
+MODEL_LOCK = threading.RLock()
+KB_LOCK = threading.RLock()
+MODEL_MANAGER = ModelManager()
+KNOWLEDGE_BASE: pipeline.DramaQAKnowledgeBase | None = None
+KNOWLEDGE_BASE_MTIME_NS: int | None = None
+IMAGE_ROOT: Path | None = None
+
+
+def _expanded_kg_mtime_ns() -> int | None:
+    try:
+        if EXPANDED_KG_PATH.exists():
+            return EXPANDED_KG_PATH.stat().st_mtime_ns
+    except OSError:
+        pass
+    return None
+
+
+def get_knowledge_base() -> pipeline.DramaQAKnowledgeBase:
+    global KNOWLEDGE_BASE, KNOWLEDGE_BASE_MTIME_NS
+    with KB_LOCK:
+        current_mtime = _expanded_kg_mtime_ns()
+        if KNOWLEDGE_BASE is None or current_mtime != KNOWLEDGE_BASE_MTIME_NS:
+            KNOWLEDGE_BASE = pipeline.DramaQAKnowledgeBase(
+                kg_path=KG_PATH,
+                qa_dir=QA_DIR,
+                expanded_kg_path=EXPANDED_KG_PATH,
+                expansion_log_path=EXPANSION_LOG_PATH,
+            )
+            KNOWLEDGE_BASE_MTIME_NS = _expanded_kg_mtime_ns()
+        return KNOWLEDGE_BASE
+
+
+def get_image_root() -> Path:
+    global IMAGE_ROOT
+    with KB_LOCK:
+        if IMAGE_ROOT is None:
+            requested = os.environ.get("LBA_IMAGE_ROOT")
+            IMAGE_ROOT = pipeline.resolve_image_root(
+                Path(requested) if requested else None
+            )
+        return IMAGE_ROOT
+
+
+def get_session_or_404(session_id: str) -> WebDialogueSession:
+    with SESSIONS_LOCK:
+        session = SESSIONS.get(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Dialogue session not found.")
+    return session
+
+
+def public_outputs(session: WebDialogueSession) -> dict[str, str] | None:
+    if session.status != "expanded":
+        return None
+    version = (
+        str(int(VISUALIZATION_PATH.stat().st_mtime_ns))
+        if VISUALIZATION_PATH.exists()
+        else str(int(time.time() * 1000))
+    )
+    return {
+        "expanded_kg": f"/output/expanded_kg.json?v={version}",
+        "type_subtype_map": f"/output/type_subtype_map.json?v={version}",
+        "transcript_csv": f"/output/input_example.csv?v={version}",
+        "expansion_log": f"/output/kg_expansion_log.json?v={version}",
+        "visualization": (
+            f"/output/visualization/expanded_kg.html?v={version}"
+        ),
+    }
+
+
+def session_payload(
+    session: WebDialogueSession, *, include_context: bool = False
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "session_id": session.session_id,
+        "question": session.question,
+        "status": session.status,
+        "retrieval_method": session.retrieval_method,
+        "scene_ids": [record.scene_id for record in session.records],
+        "images": [
+            {
+                "scene_id": scene_id,
+                "url": f"/api/sessions/{session.session_id}/images/{index}",
+            }
+            for index, (scene_id, _) in enumerate(session.images)
+        ],
+        "current_sub_question": session.current_sub_question,
+        "dialogue": list(session.transcript),
+        "turn": len(session.transcript) + (
+            1 if session.current_sub_question else 0
+        ),
+        "min_subquestions": session.min_subquestions,
+        "max_subquestions": session.max_subquestions,
+        "final": (
+            asdict(session.final_decision) if session.final_decision else None
+        ),
+        "kg_expansion": list(session.expansion_results),
+        "kg_expansion_error": session.expansion_error,
+        "cancel_requested": session.cancel_requested,
+        "kg_expansion_outputs": public_outputs(session),
+        "model": MODEL_NAME,
+        "model_loaded": MODEL_MANAGER.loaded,
+        "model_config": model_config_payload(),
+    }
+    if include_context:
+        try:
+            payload["kg_context"] = json.loads(session.context)
+        except json.JSONDecodeError:
+            payload["kg_context"] = session.context
+    return payload
+
+
+def model_for(session: WebDialogueSession) -> pipeline.QwenSubQuestionAgent:
+    return MODEL_MANAGER.get(
+        session.question,
+        session.reference_answer,
+        entity_genders=session.entity_genders,
+        prior_kg_questions=session.prior_kg_questions,
+        added_relations=session.added_relations,
+        same_question_in_kg=session.same_question_in_kg,
+    )
+
+
+class SessionAgentContext:
+    def __init__(self, session: WebDialogueSession) -> None:
+        self.session = session
+        self.agent: pipeline.QwenSubQuestionAgent | None = None
+
+    def __enter__(self) -> pipeline.QwenSubQuestionAgent:
+        MODEL_LOCK.acquire()
+        try:
+            self.agent = model_for(self.session)
+            self.agent.stop_event = self.session.stop_event
+            if self.session.stop_event.is_set():
+                raise pipeline.GenerationCancelled(
+                    "Generation was cancelled by the user."
+                )
+            return self.agent
+        except BaseException:
+            if self.agent is not None:
+                self.agent.stop_event = None
+            MODEL_MANAGER.mark_used()
+            MODEL_LOCK.release()
+            raise
+
+    def __exit__(self, exc_type: Any, exc: Any, traceback: Any) -> None:
+        if self.agent is not None:
+            self.agent.stop_event = None
+            MODEL_MANAGER.mark_used()
+        MODEL_LOCK.release()
+
