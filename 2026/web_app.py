@@ -134,3 +134,59 @@ class WebDialogueSession:
     )
     lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
 
+
+class ModelManager:
+    """Lazily loads one model and serializes use of its mutable session fields."""
+
+    def __init__(self) -> None:
+        self.agent: pipeline.QwenSubQuestionAgent | None = None
+        self.last_used_at = time.time()
+        self.last_unloaded_at: float | None = None
+        self.last_unload_reason: str | None = None
+
+    def mark_used(self) -> None:
+        self.last_used_at = time.time()
+
+
+    @property
+    def loaded(self) -> bool:
+        return self.agent is not None
+
+    def get(
+        self,
+        question: str,
+        reference_answer: str | None,
+        entity_genders: dict[str, str] | None = None,
+        prior_kg_questions: list[str] | None = None,
+        added_relations: list[dict[str, str]] | None = None,
+        same_question_in_kg: bool = False,
+    ) -> pipeline.QwenSubQuestionAgent:
+        if self.agent is None:
+            self.agent = pipeline.QwenSubQuestionAgent(
+                model_name=MODEL_NAME,
+                dtype=MODEL_DTYPE,
+                max_new_tokens=MODEL_MAX_NEW_TOKENS,
+                temperature=MODEL_TEMPERATURE,
+                top_p=MODEL_TOP_P,
+                top_k=MODEL_TOP_K,
+                attn_implementation=MODEL_ATTN,
+                cache_dir=MODEL_CACHE_DIR,
+                local_files_only=MODEL_LOCAL_ONLY,
+                original_question=question,
+                reference_answer=reference_answer,
+                max_gpu_memory_gib=RUNTIME_MAX_GPU_MEMORY_GIB,
+                max_cpu_memory_gib=RUNTIME_MAX_CPU_MEMORY_GIB,
+                entity_genders=entity_genders,
+                prior_kg_questions=prior_kg_questions or (),
+                added_relations=added_relations or (),
+                same_question_in_kg=same_question_in_kg,
+            )
+        self.agent.original_question = question
+        self.agent.reference_answer = reference_answer
+        self.agent.entity_genders = dict(entity_genders or {})
+        self.agent.prior_kg_questions = list(prior_kg_questions or ())
+        self.agent.added_relations = list(added_relations or ())
+        self.agent.same_question_in_kg = bool(same_question_in_kg)
+        self.mark_used()
+        return self.agent
+
