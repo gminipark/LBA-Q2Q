@@ -605,3 +605,116 @@ def gpu_inventory() -> dict[str, Any]:
 def sample() -> dict[str, str]:
     return {"question": pipeline.SAMPLE_QUESTION}
 
+
+@app.post("/api/sessions")
+def create_session(request: CreateSessionRequest) -> dict[str, Any]:
+    question = " ".join(request.question.strip().split())
+    configure_model_limits(
+        request.gpu_ids,
+        request.max_gpu_memory_gib,
+        request.max_cpu_memory_gib,
+        request.gpu_idle_timeout_minutes,
+    )
+    if request.min_subquestions > request.max_subquestions:
+        raise HTTPException(
+            status_code=422,
+            detail="min_subquestions cannot exceed max_subquestions.",
+        )
+    explicit_ids = (
+        [item.strip() for item in request.vid.split(",") if item.strip()]
+        if request.vid
+        else None
+    )
+    try:
+        kb = get_knowledge_base()
+        records, retrieval_method = kb.retrieve(
+            question,
+            top_k=request.top_scenes,
+            explicit_scene_ids=explicit_ids,
+        )
+        if not records:
+            raise RuntimeError(
+                "No relevant scene was found. Enter a scene ID in Advanced options."
+            )
+
+        matched_qa = kb.find_exact_qa(question)
+        shot_ranges: dict[str, tuple[int, int]] = {}
+        if matched_qa and matched_qa.shot_range:
+            for scene_id in matched_qa.scene_ids:
+                shot_ranges[scene_id] = matched_qa.shot_range
+        images = pipeline.representative_frames(
+            get_image_root(),
+            records,
+            max_images=request.max_images,
+            shot_ranges=shot_ranges,
+        )
+        selected_shot_ids = {
+            f"{'_'.join(scene_id.split('_')[:2])}_{path.parent.name}"
+            for scene_id, path in images
+        }
+        prior_knowledge = kb.get_prior_verified_knowledge(question, records)
+        effective_min_subquestions = pipeline.compute_effective_min_subquestions(
+            request.min_subquestions, prior_knowledge
+        )
+        prior_kg_questions = [
+            str(item["sub_question"])
+            for item in prior_knowledge.get("verified_subquestions", [])
+            if isinstance(item, dict) and item.get("sub_question")
+        ]
+        context = kb.build_context(question, records, selected_shot_ids)
+        messages = pipeline.initial_messages(
+            question,
+            context,
+            images,
+            effective_min_subquestions,
+            request.max_subquestions,
+            prior_knowledge=prior_knowledge,
+        )
+    except (FileNotFoundError, RuntimeError, ValueError) as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    session = WebDialogueSession(
+        session_id=uuid.uuid4().hex,
+        question=question,
+        retrieval_method=retrieval_method,
+        records=records,
+        images=images,
+        context=context,
+        messages=messages,
+        min_subquestions=effective_min_subquestions,
+        max_subquestions=request.max_subquestions,
+        reference_answer=matched_qa.answer if matched_qa else None,
+        entity_genders=dict(kb.entity_genders),
+        prior_kg_questions=prior_kg_questions,
+        added_relations=list(prior_knowledge.get("added_relations", [])),
+        same_question_in_kg=bool(
+            prior_knowledge.get("same_question_already_in_kg")
+        ),
+    )
+    with SESSIONS_LOCK:
+        while len(SESSIONS) >= MAX_SESSIONS:
+            oldest_id = min(
+                SESSIONS, key=lambda key: SESSIONS[key].created_at
+            )
+            SESSIONS.pop(oldest_id, None)
+        SESSIONS[session.session_id] = session
+    return session_payload(session, include_context=True)
+
+
+@app.get("/api/sessions/{session_id}")
+def read_session(session_id: str) -> dict[str, Any]:
+    session = get_session_or_404(session_id)
+    with session.lock:
+        return session_payload(session, include_context=True)
+
+
+@app.get("/api/sessions/{session_id}/images/{image_index}")
+def session_image(session_id: str, image_index: int) -> FileResponse:
+    session = get_session_or_404(session_id)
+    if image_index < 0 or image_index >= len(session.images):
+        raise HTTPException(status_code=404, detail="Frame not found.")
+    path = session.images[image_index][1]
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Frame file is missing.")
+    return FileResponse(path)
+
