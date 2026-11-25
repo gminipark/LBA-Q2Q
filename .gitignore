@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+*$py.class
+.ipynb_checkpoints/
+.pytest_cache/
+.DS_Store
+
+# Large datasets, images, caches, and generated outputs
+*.zip
+*.tar.gz
+*.pickle
+*.pkl
+2026/AnotherMissOh_images/
+2026/DramaQA-*/
+2026/output/
+2025/ICQA/No-FT/data/
+2025/ICQA/No-FT/models/
