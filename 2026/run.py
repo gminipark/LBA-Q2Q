@@ -1274,3 +1274,55 @@ def safe_fallback_sub_question(asked_questions: Sequence[str]) -> str:
             return candidate
     return candidates[-1]
 
+
+
+def json_objects_from_text(text: str) -> list[dict[str, Any]]:
+    decoder = json.JSONDecoder()
+    objects: list[dict[str, Any]] = []
+    for index, character in enumerate(text):
+        if character != "{":
+            continue
+        try:
+            value, _ = decoder.raw_decode(text[index:])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict):
+            objects.append(value)
+    return objects
+
+
+def parse_decision(text: str) -> Decision:
+    visible_text = text.rsplit("</think>", 1)[-1] if "</think>" in text else text
+    objects = json_objects_from_text(visible_text)
+    if objects:
+        value = objects[-1]
+        done = value.get("done")
+        if isinstance(done, str):
+            done = done.strip().lower() == "true"
+        if isinstance(done, bool):
+            if done:
+                final_answer = value.get("final_answer") or value.get("answer")
+                evidence = value.get("evidence", [])
+                if isinstance(final_answer, str) and final_answer.strip():
+                    return Decision(
+                        done=True,
+                        final_answer=final_answer.strip(),
+                        evidence=[str(item) for item in evidence]
+                        if isinstance(evidence, list)
+                        else [],
+                    )
+            else:
+                sub_question = value.get("sub_question") or value.get("question")
+                if isinstance(sub_question, str) and sub_question.strip():
+                    cleaned_sub = rewrite_ambiguous_entity_clauses(sub_question.strip())
+                    return Decision(done=False, sub_question=cleaned_sub)
+
+    # Gracefully accept a bare binary question if JSON formatting alone failed.
+    candidates = [line.strip() for line in visible_text.splitlines() if line.strip().endswith("?")]
+    for candidate in reversed(candidates):
+        candidate = re.sub(r"^(sub[- ]?question\s*:\s*)", "", candidate, flags=re.I)
+        candidate = rewrite_ambiguous_entity_clauses(candidate)
+        if is_yes_no_question(candidate):
+            return Decision(done=False, sub_question=candidate)
+    raise ValueError("The model response did not contain a valid decision JSON object.")
+
