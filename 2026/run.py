@@ -1326,3 +1326,272 @@ def parse_decision(text: str) -> Decision:
             return Decision(done=False, sub_question=candidate)
     raise ValueError("The model response did not contain a valid decision JSON object.")
 
+
+def meaningful_tokens(text: str) -> set[str]:
+    stopwords = {
+        "a", "an", "the", "and", "or", "but", "as", "at", "by", "for",
+        "from", "in", "into", "of", "on", "to", "with", "who", "whom",
+        "whose", "what", "where", "when", "why", "how", "which", "is",
+        "are", "was", "were", "do", "does", "did", "has", "have", "had",
+        "can", "could", "will", "would", "should", "may", "might", "must",
+        "he", "she", "it", "they", "them", "his", "her", "their", "this",
+        "that", "these", "those", "there", "then", "be", "been", "being",
+    }
+    return {token for token in tokenize(text) if len(token) > 1 and token not in stopwords}
+
+
+def kg_entity_consistency_reason(
+    sub_question: str,
+    entity_genders: dict[str, str] | None = None,
+) -> str | None:
+    merged_genders = {
+        **KNOWN_CHARACTER_GENDERS,
+        **{k.lower(): v for k, v in (entity_genders or {}).items()},
+    }
+    lowered = sub_question.lower()
+    tokens = tokenize(sub_question)
+    mentioned_males = [
+        name for name, gender in merged_genders.items()
+        if gender == "male" and re.search(rf"\b{re.escape(name)}\b", lowered)
+    ]
+    mentioned_females = [
+        name for name, gender in merged_genders.items()
+        if gender == "female" and re.search(rf"\b{re.escape(name)}\b", lowered)
+    ]
+
+    for male_name in mentioned_males:
+        # Reject phrases like "woman Dokyung", "female Dokyung", "girl Dokyung", "is Dokyung a woman/girlfriend"
+        if re.search(
+            rf"\b(?:woman|female|girl|lady)\s+{re.escape(male_name)}\b"
+            rf"|\b{re.escape(male_name)}\s+is\s+(?:a\s+|an\s+|the\s+)?(?:woman|female|girl|lady|girlfriend|wife|mother|sister|daughter)\b"
+            rf"|\bis\s+{re.escape(male_name)}\s+(?:a\s+|an\s+|the\s+)?(?:woman|female|girl|lady|girlfriend|wife|mother|sister|daughter)\b",
+            lowered,
+        ):
+            return (
+                f"According to the KG, '{male_name.capitalize()}' is male (man, he/him), "
+                f"not a woman/female. Check the KG character gender and relationships "
+                f"carefully and do not write 'woman {male_name.capitalize()}'."
+            )
+        # If this male character is the only person mentioned (no female character or generic woman/person noun),
+        # reject female pronouns 'she'/'her'/'herself'.
+        has_other_person_reference = bool(mentioned_females) or any(
+            word in tokens
+            for word in (
+                "woman", "girl", "lady", "female", "person", "someone",
+                "colleague", "coworker", "employee", "mother", "sister", "girlfriend",
+            )
+        )
+        if not has_other_person_reference and any(
+            pron in tokens for pron in ("she", "her", "herself")
+        ):
+            return (
+                f"According to the KG, '{male_name.capitalize()}' is male (he/him). "
+                "Do not refer to a male character with female pronouns (she/her)."
+            )
+
+    for female_name in mentioned_females:
+        if re.search(
+            rf"\b(?:man|male|boy|guy)\s+{re.escape(female_name)}\b"
+            rf"|\b{re.escape(female_name)}\s+is\s+(?:a\s+|an\s+|the\s+)?(?:man|male|boy|guy|boyfriend|husband|father|brother|son)\b"
+            rf"|\bis\s+{re.escape(female_name)}\s+(?:a\s+|an\s+|the\s+)?(?:man|male|boy|guy|boyfriend|husband|father|brother|son)\b",
+            lowered,
+        ):
+            return (
+                f"According to the KG, '{female_name.capitalize()}' is female (woman, she/her), "
+                f"not a man/male. Check the KG character gender and relationships carefully."
+            )
+        has_other_person_reference = bool(mentioned_males) or any(
+            word in tokens
+            for word in (
+                "man", "boy", "guy", "male", "person", "someone",
+                "colleague", "coworker", "employee", "father", "brother", "boyfriend",
+            )
+        )
+        if not has_other_person_reference and any(
+            pron in tokens for pron in ("he", "him", "his", "himself")
+        ):
+            return (
+                f"According to the KG, '{female_name.capitalize()}' is female (she/her). "
+                "Do not refer to a female character with male pronouns (he/him/his)."
+            )
+    return None
+
+
+def already_known_in_kg_reason(
+    sub_question: str,
+    prior_kg_questions: Sequence[str] = (),
+    added_relations: Sequence[dict[str, str]] = (),
+    can_finish_now: bool = False,
+) -> str | None:
+    if not prior_kg_questions and not added_relations:
+        return None
+    normalized_sub = normalize_question(sub_question)
+    sub_terms = meaningful_tokens(sub_question)
+    finish_hint = (
+        "Since the required knowledge is already in the KG and the minimum sub-question "
+        "requirement is met, return {\"done\": true, \"final_answer\": \"...\", \"evidence\": [...]} now."
+        if can_finish_now
+        else "Ask a different binary sub-question about an unverified detail not already in the KG."
+    )
+
+    for prior_q in prior_kg_questions:
+        norm_prior = normalize_question(prior_q)
+        if not norm_prior:
+            continue
+        if normalized_sub == norm_prior:
+            return (
+                f"The sub-question '{prior_q}' was already verified in a prior session and "
+                f"its knowledge is already in the KG. Do not repeat it. {finish_hint}"
+            )
+        prior_terms = meaningful_tokens(prior_q)
+        if sub_terms and prior_terms:
+            overlap = len(sub_terms & prior_terms)
+            min_len = max(min(len(sub_terms), len(prior_terms)), 1)
+            if overlap >= 2 and (overlap / min_len) >= 0.72:
+                return (
+                    f"A very similar sub-question ('{prior_q}') was already verified "
+                    f"and stored in the KG. Do not ask redundant questions about knowledge "
+                    f"already in the graph. {finish_hint}"
+                )
+
+    for rel in added_relations:
+        r_type = str(rel.get("type", "")).lower()
+        r_sub = str(rel.get("subtype", "")).lower()
+        head = str(rel.get("head", "")).lower()
+        tail = str(rel.get("tail", "")).lower()
+        rel_synonyms: set[str] = set(tokenize(f"{r_type} {r_sub}"))
+        if r_sub in {"colleague", "coworker"} or r_type == "work":
+            rel_synonyms.update({"colleague", "colleagues", "coworker", "coworkers", "company", "work", "office"})
+        if r_sub in {"girlfriend", "boyfriend", "lover"} or r_type == "romantic":
+            rel_synonyms.update({"girlfriend", "boyfriend", "romantic", "dating", "lover"})
+        if r_sub in {"friend", "acquaintance"}:
+            rel_synonyms.update({"friend", "friends", "acquaintance"})
+        if (head in sub_terms or tail in sub_terms) and (sub_terms & rel_synonyms):
+            return (
+                f"The KG already contains the expanded relation '{rel.get('fact', '')}'. "
+                f"Do not re-ask a sub-question to verify a relation already in the KG. {finish_hint}"
+            )
+    return None
+
+
+def direct_answer_probe_reason(
+    original_question: str,
+    sub_question: str,
+    reference_answer: str | None,
+) -> str | None:
+    original_terms = meaningful_tokens(original_question)
+    original_lower = original_question.lstrip().lower()
+    sub_terms = meaningful_tokens(sub_question)
+    if reference_answer:
+        answer_only_terms = meaningful_tokens(reference_answer) - original_terms
+        if answer_only_terms & sub_terms:
+            return (
+                "The sub-question directly mentions information unique to the "
+                "reference answer. Ask an indirect evidence question about a visible "
+                "attribute, action, location, or non-target KG relation without "
+                "naming or proposing the final answer."
+            )
+    elif original_lower.startswith(("who ", "whom ", "whose ")):
+        original_surface = set(TOKEN_RE.findall(original_question))
+        new_named_candidates = {
+            token
+            for token in TOKEN_RE.findall(sub_question)
+            if (token[:1].isupper() or any(char.isdigit() for char in token))
+            and token not in original_surface
+            and token.lower() not in {"is", "are", "does", "did", "can", "kg"}
+        }
+        if new_named_candidates:
+            return (
+                "A Who-question sub-question must not introduce a new named answer "
+                "candidate. Ask about unnamed visual or KG evidence instead."
+            )
+    elif original_lower.startswith("where "):
+        spatial_prepositions = {"in", "at", "on", "near", "inside", "outside"}
+        if spatial_prepositions & set(tokenize(sub_question)) and (sub_terms - original_terms):
+            return (
+                "A Where-question sub-question must not propose a specific final "
+                "location. Ask only coarse or upstream scene evidence."
+            )
+    elif "relationship" in original_lower or "relation between" in original_lower:
+        target_relations = {
+            "romantic", "family", "friend", "friends", "friendship", "coworker",
+            "coworkers", "colleague", "colleagues", "rival", "rivals", "sibling",
+            "siblings", "parent", "child", "married", "dating", "estranged",
+        }
+        if target_relations & sub_terms:
+            return (
+                "A relationship-target question must not propose the final relation "
+                "label. Ask about an indirect interaction or shared context."
+            )
+    elif original_terms:
+        coverage = len(original_terms & sub_terms) / len(original_terms)
+        if coverage >= 0.8 and (sub_terms - original_terms):
+            return (
+                "The sub-question is a binary reformulation of the original target. "
+                "Ask an upstream evidence question instead of proposing its answer."
+            )
+    return None
+
+
+def validate_decision(
+    decision: Decision,
+    asked_questions: Sequence[str],
+    min_subquestions: int,
+    force_final: bool,
+    original_question: str = "",
+    reference_answer: str | None = None,
+    entity_genders: dict[str, str] | None = None,
+    prior_kg_questions: Sequence[str] = (),
+    added_relations: Sequence[dict[str, str]] = (),
+    answers: Sequence[str] = (),
+) -> str | None:
+    if force_final:
+        if not decision.done or not decision.final_answer:
+            return "You must return done=true and a non-empty final_answer now."
+        return None
+    if decision.done:
+        if len(asked_questions) < min_subquestions:
+            return (
+                f"You must ask at least {min_subquestions} binary sub-questions before "
+                "returning the final answer."
+            )
+        if asked_questions and answers and "Yes" not in answers:
+            return (
+                "None of your sub-questions have been confirmed with 'Yes' yet (all answers "
+                "so far were 'No'). Ask a follow-up binary sub-question to verify an "
+                "alternative clue before returning the final answer."
+            )
+        if not decision.final_answer or not decision.final_answer.strip():
+            return "When done=true, you must provide a non-empty final_answer."
+        return None
+    if not decision.sub_question or not is_yes_no_question(decision.sub_question):
+        return (
+            "Return exactly one yes/no sub-question. It must end in one '?' and must "
+            "use ASCII English, and not begin with a wh-word such as what, where, who, why, or how."
+        )
+    gender_error = kg_entity_consistency_reason(
+        decision.sub_question, entity_genders
+    )
+    if gender_error:
+        return gender_error
+    direct_probe_error = direct_answer_probe_reason(
+        original_question, decision.sub_question, reference_answer
+    )
+    if direct_probe_error:
+        return direct_probe_error
+    normalized = normalize_question(decision.sub_question)
+    if normalized in {normalize_question(item) for item in asked_questions}:
+        return "Do not repeat an earlier sub-question; ask a new binary question."
+    kg_repeat_error = already_known_in_kg_reason(
+        decision.sub_question,
+        prior_kg_questions=prior_kg_questions,
+        added_relations=added_relations,
+        can_finish_now=(
+            len(asked_questions) >= min_subquestions
+            and ("Yes" in answers or not answers)
+        ),
+    )
+    if kg_repeat_error:
+        return kg_repeat_error
+    return None
+
