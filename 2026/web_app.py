@@ -718,3 +718,169 @@ def session_image(session_id: str, image_index: int) -> FileResponse:
         raise HTTPException(status_code=404, detail="Frame file is missing.")
     return FileResponse(path)
 
+
+@app.post("/api/sessions/{session_id}/next")
+def first_sub_question(session_id: str) -> dict[str, Any]:
+    session = get_session_or_404(session_id)
+    with session.lock:
+        if session.status in {"awaiting_answer", "complete", "expanded"}:
+            return session_payload(session)
+        if session.status != "prepared":
+            raise HTTPException(
+                status_code=409,
+                detail=f"Cannot generate a first question in state {session.status}.",
+            )
+        session.stop_event.clear()
+        session.cancel_requested = False
+        session.status = "generating"
+        try:
+            with SessionAgentContext(session) as agent:
+                decision = agent.decide(
+                    session.messages,
+                    asked_questions=[],
+                    min_subquestions=session.min_subquestions,
+                )
+        except pipeline.GenerationCancelled:
+            session.status = "cancelled"
+            session.current_sub_question = None
+            session.cancel_requested = True
+            return session_payload(session)
+        except (RuntimeError, ValueError) as exc:
+            session.status = "prepared"
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        if decision.done:
+            session.final_decision = decision
+            session.current_sub_question = None
+            session.status = "complete"
+            return session_payload(session)
+        if not decision.sub_question:
+            raise HTTPException(
+                status_code=500,
+                detail="The model did not produce the required first yes/no sub-question.",
+            )
+        session.current_sub_question = decision.sub_question
+        session.status = "awaiting_answer"
+        return session_payload(session)
+
+
+@app.post("/api/sessions/{session_id}/answer")
+def answer_sub_question(
+    session_id: str, request: AnswerRequest
+) -> dict[str, Any]:
+    session = get_session_or_404(session_id)
+    answer = pipeline.normalize_binary_answer(request.answer)
+    if answer is None:
+        raise HTTPException(status_code=422, detail="Answer must be exactly yes or no.")
+
+    with session.lock:
+        if session.status != "awaiting_answer" or not session.current_sub_question:
+            raise HTTPException(
+                status_code=409,
+                detail="This session is not waiting for a yes/no answer.",
+            )
+
+        question = session.current_sub_question
+        new_transcript = list(session.transcript) + [
+            {"sub_question": question, "answer": answer}
+        ]
+        asked_questions = [item["sub_question"] for item in new_transcript]
+        new_messages = list(session.messages)
+        new_messages.append(
+            {
+                "role": "assistant",
+                "content": pipeline.text_content(
+                    json.dumps(
+                        {"done": False, "sub_question": question},
+                        ensure_ascii=False,
+                    )
+                ),
+            }
+        )
+        remaining = session.max_subquestions - len(new_transcript)
+        answers_so_far = [item["answer"] for item in new_transcript]
+        new_messages.append(
+            {
+                "role": "user",
+                "content": pipeline.text_content(
+                    pipeline.build_turn_followup_prompt(
+                        answer=answer,
+                        remaining=remaining,
+                        asked_count=len(asked_questions),
+                        min_subquestions=session.min_subquestions,
+                        answers_so_far=answers_so_far,
+                    )
+                ),
+            }
+        )
+        force_final = len(new_transcript) >= session.max_subquestions
+        if force_final:
+            new_messages.append(
+                {
+                    "role": "user",
+                    "content": pipeline.text_content(
+                        "The sub-question limit has been reached. Do not ask "
+                        "another question. Return done=true with the final answer "
+                        "and concise evidence."
+                    ),
+                }
+            )
+
+        session.stop_event.clear()
+        session.cancel_requested = False
+        session.status = "generating"
+        try:
+            with SessionAgentContext(session) as agent:
+                decision = agent.decide(
+                    new_messages,
+                    asked_questions=asked_questions,
+                    min_subquestions=session.min_subquestions,
+                    force_final=force_final,
+                    answers=answers_so_far,
+                )
+        except pipeline.GenerationCancelled:
+            session.messages = new_messages
+            session.transcript = new_transcript
+            session.current_sub_question = None
+            session.status = "cancelled"
+            session.cancel_requested = True
+            return session_payload(session)
+        except (RuntimeError, ValueError) as exc:
+            session.status = "awaiting_answer"
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+        session.messages = new_messages
+        session.transcript = new_transcript
+        if decision.done:
+            session.final_decision = decision
+            session.current_sub_question = None
+            session.status = "complete"
+        else:
+            if not decision.sub_question:
+                raise HTTPException(
+                    status_code=500,
+                    detail="The model returned an empty sub-question.",
+                )
+            session.current_sub_question = decision.sub_question
+            session.status = "awaiting_answer"
+        return session_payload(session)
+
+
+@app.post("/api/sessions/{session_id}/cancel")
+def cancel_session(session_id: str) -> dict[str, Any]:
+    session = get_session_or_404(session_id)
+    session.cancel_requested = True
+    session.stop_event.set()
+    acquired = session.lock.acquire(blocking=False)
+    try:
+        if acquired and session.status not in {"expanded", "cancelled"}:
+            session.status = "cancelled"
+            session.current_sub_question = None
+        return {
+            "session_id": session.session_id,
+            "status": session.status if acquired else "cancelling",
+            "cancel_requested": True,
+        }
+    finally:
+        if acquired:
+            session.lock.release()
+
