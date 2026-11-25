@@ -524,3 +524,84 @@ app = FastAPI(
 )
 app.mount("/output", StaticFiles(directory=str(OUTPUT_DIR)), name="output")
 
+
+@app.get("/", include_in_schema=False)
+def index() -> FileResponse:
+    index_path = WEB_DIR / "index.html"
+    if not index_path.is_file():
+        raise HTTPException(status_code=500, detail="web/index.html is missing.")
+    return FileResponse(index_path)
+
+
+@app.get("/api/health")
+def health() -> dict[str, Any]:
+    with SESSIONS_LOCK:
+        session_count = len(SESSIONS)
+    return {
+        "ok": True,
+        "model": MODEL_NAME,
+        "model_loaded": MODEL_MANAGER.loaded,
+        "model_config": model_config_payload(),
+        "knowledge_base_loaded": KNOWLEDGE_BASE is not None,
+        "sessions": session_count,
+    }
+
+
+@app.post("/api/model/unload")
+def unload_model_endpoint() -> dict[str, Any]:
+    released, status = unload_model("manual", require_idle=False)
+    if not released and status == "busy":
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "The model is generating now. Stop the active dialogue first, "
+                "then unload the model."
+            ),
+        )
+    payload = health()
+    payload.update({"released": released, "unload_status": status})
+    return payload
+
+
+@app.get("/api/gpus")
+def gpu_inventory() -> dict[str, Any]:
+    command = [
+        "nvidia-smi",
+        "--query-gpu=index,name,memory.total,memory.used",
+        "--format=csv,noheader,nounits",
+    ]
+    try:
+        result = subprocess.run(
+            command, capture_output=True, text=True, timeout=5, check=False
+        )
+    except (FileNotFoundError, subprocess.SubprocessError) as exc:
+        return {"available": False, "gpus": [], "error": str(exc)}
+    if result.returncode != 0:
+        return {
+            "available": False,
+            "gpus": [],
+            "error": result.stderr.strip() or "nvidia-smi failed.",
+        }
+    gpus: list[dict[str, Any]] = []
+    for line in result.stdout.splitlines():
+        fields = [field.strip() for field in line.split(",", 3)]
+        if len(fields) != 4:
+            continue
+        try:
+            gpus.append(
+                {
+                    "index": int(fields[0]),
+                    "name": fields[1],
+                    "memory_total_mib": int(fields[2]),
+                    "memory_used_mib": int(fields[3]),
+                }
+            )
+        except ValueError:
+            continue
+    return {"available": bool(gpus), "gpus": gpus, "error": None}
+
+
+@app.get("/api/sample")
+def sample() -> dict[str, str]:
+    return {"question": pipeline.SAMPLE_QUESTION}
+
