@@ -2350,3 +2350,73 @@ class QwenSubQuestionAgent:
             )
         return repaired
 
+
+def write_json_atomic(path: Path, value: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = path.with_name(path.name + ".tmp")
+    with temporary_path.open("w", encoding="utf-8") as handle:
+        json.dump(value, handle, ensure_ascii=False, indent=2)
+        handle.write(chr(10))
+    temporary_path.replace(path)
+
+
+def build_type_subtype_map(kg_data: Sequence[dict[str, Any]]) -> dict[str, list[str]]:
+    type_to_subtypes: dict[str, set[str]] = defaultdict(set)
+    for episode in kg_data:
+        episode_knowledge = episode.get("episode_knowledge", {})
+        if not isinstance(episode_knowledge, dict):
+            continue
+        for head, head_info in episode_knowledge.items():
+            if not is_valid_kg_entity_name(str(head)) or not isinstance(head_info, dict):
+                continue
+            relationships = head_info.get("relationships", {})
+            if not isinstance(relationships, dict):
+                continue
+            for tail, relation_info in relationships.items():
+                if not is_valid_kg_entity_name(str(tail)) or not isinstance(relation_info, dict):
+                    continue
+                relation_type = relation_info.get("type")
+                subtype = relation_info.get("subtype")
+                relation_types = (
+                    [relation_type] if isinstance(relation_type, str)
+                    else relation_type if isinstance(relation_type, list) else []
+                )
+                subtypes = (
+                    [subtype] if isinstance(subtype, str)
+                    else subtype if isinstance(subtype, list) else []
+                )
+                if len(relation_types) != len(subtypes):
+                    print(
+                        f"[kg-expansion] Skipping mismatched type/subtype: "
+                        f"{head} -> {tail}",
+                        file=sys.stderr,
+                    )
+                    continue
+                for relation_name, subtype_name in zip(relation_types, subtypes):
+                    if isinstance(relation_name, str) and isinstance(subtype_name, str):
+                        type_to_subtypes[relation_name].add(subtype_name)
+    return {
+        relation_name: sorted(subtypes)
+        for relation_name, subtypes in sorted(type_to_subtypes.items())
+    }
+
+
+def save_transcript_csv(
+    path: Path, transcript: Sequence[dict[str, str]], episode_id: str
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(
+            handle, fieldnames=("level", "episode", "question", "answer")
+        )
+        writer.writeheader()
+        for turn in transcript:
+            writer.writerow(
+                {
+                    "level": "dialogue",
+                    "episode": episode_id,
+                    "question": turn.get("sub_question", ""),
+                    "answer": turn.get("answer", ""),
+                }
+            )
+
