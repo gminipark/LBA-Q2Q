@@ -1148,3 +1148,129 @@ def representative_frames(
             selected.append((scene_id, path))
     return selected
 
+
+def is_plausible_english_question(text: str) -> bool:
+    question = " ".join(text.strip().split())
+    if not question.isascii() or not 6 <= len(question) <= 220:
+        return False
+    if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9\s,.\x27?!():-]*", question) is None:
+        return False
+    words = re.findall(r"[A-Za-z][A-Za-z0-9\x27-]*", question)
+    if not 3 <= len(words) <= 32:
+        return False
+    return all(len(word) <= 30 for word in words)
+
+
+
+def is_yes_no_question(text: str) -> bool:
+    question = " ".join(text.strip().split())
+    if not is_plausible_english_question(question):
+        return False
+    if not question.endswith("?") or question.count("?") != 1:
+        return False
+    lowered = question.lower()
+    if lowered.startswith(ENGLISH_WH_PREFIXES):
+        return False
+    if lowered.startswith(ENGLISH_BINARY_PREFIXES):
+        return True
+    return False
+
+
+def rewrite_ambiguous_entity_clauses(
+    question: str,
+    entity_genders: dict[str, str] | None = None,
+) -> str:
+    merged_genders = {
+        **KNOWN_CHARACTER_GENDERS,
+        **{k.lower(): v for k, v in (entity_genders or {}).items()},
+    }
+    relative_Subject_verbs = (
+        "meets|met|runs|ran|sees|saw|talks|talked|speaks|spoke|greets|greeted|"
+        "bumps|bumped|visits|visited|calls|called|helps|helped|knows|knew|"
+        "loves|loved|likes|liked|dates|dated|marries|married|gives|gave|"
+        "hands|handed|approaches|approached|confronts|confronted|follows|followed|"
+        "watches|watched|Hugs|hugged|kisses|kissed|pushes|pushed|pulls|pulled|"
+        "notices|noticed|recognizes|recognized|encounters|encountered"
+    )
+    # Rewrite reduced relative clauses like "woman Dokyung meets" -> "woman whom Dokyung meets"
+    # so a generic gender noun and a character name are never juxtaposed as "woman Dokyung".
+    pattern = re.compile(
+        rf"\b(woman|man|person|girl|boy|lady|guy|colleague|coworker|employee|stranger)\s+"
+        rf"([A-Z][A-Za-z0-9_]*)\s+({relative_Subject_verbs})\b",
+        flags=re.I,
+    )
+    question = pattern.sub(r"\1 whom \2 \3", question)
+
+    # If the model literally wrote "the woman <MaleName>" or "the man <FemaleName>"
+    # as an appositive, strip the wrong gender noun.
+    def _fix_appositive(match: re.Match[str]) -> str:
+        det = match.group(1) or ""
+        noun = match.group(2)
+        name = match.group(3)
+        gender = merged_genders.get(name.lower())
+        noun_lower = noun.lower()
+        if gender == "male" and noun_lower in {"woman", "female", "girl", "lady"}:
+            return name
+        if gender == "female" and noun_lower in {"man", "male", "boy", "guy"}:
+            return name
+        return f"{det}{noun} {name}"
+
+    question = re.sub(
+        r"\b(the\s+|a\s+|an\s+)?(woman|man|female|male|girl|boy|lady|guy)\s+([A-Z][A-Za-z0-9_]*)\b(?!\s+(?:whom|who|that)\b)",
+        _fix_appositive,
+        question,
+        flags=re.I,
+    )
+    return " ".join(question.split())
+
+
+def normalize_model_sub_question(
+    text: str,
+    entity_genders: dict[str, str] | None = None,
+) -> str | None:
+    question = " ".join(text.strip().strip("\"").split())
+    question = re.sub(
+        r"^(?:sub[- ]?question|question)\s*:\s*", "", question, flags=re.I
+    )
+    if "?" in question:
+        question = question.split("?", 1)[0].strip() + "?"
+    elif question:
+        question = question.rstrip(".! ") + "?"
+    question = rewrite_ambiguous_entity_clauses(question, entity_genders)
+    if is_yes_no_question(question):
+        return question
+    if not is_plausible_english_question(question):
+        return None
+
+    lowered = question.lower()
+    non_binary_prefixes = (
+        "tell ", "name ", "list ", "explain ", "describe ", "identify "
+    )
+    if not question or lowered.startswith(ENGLISH_WH_PREFIXES + non_binary_prefixes):
+        return None
+
+    statement = question[:-1].strip()
+    statement_terms = set(tokenize(statement))
+    binary_verbs = {prefix.strip() for prefix in ENGLISH_BINARY_PREFIXES}
+    if not statement or not (statement_terms & binary_verbs):
+        return None
+    candidate = f"Is it true that {statement[:1].lower() + statement[1:]}?"
+    candidate = rewrite_ambiguous_entity_clauses(candidate, entity_genders)
+    return candidate if is_yes_no_question(candidate) else None
+
+
+def safe_fallback_sub_question(asked_questions: Sequence[str]) -> str:
+    candidates = (
+        "Does the selected visual evidence show the relevant event?",
+        "Does the retrieved KG describe the relevant event?",
+        "Can a visible action distinguish the relevant entities?",
+        "Does a visible interaction distinguish the relevant entities?",
+        "Can an indirect KG relation distinguish the relevant entities?",
+        "Does the selected evidence reveal a useful non-target attribute?",
+    )
+    asked = {normalize_question(item) for item in asked_questions}
+    for candidate in candidates:
+        if normalize_question(candidate) not in asked:
+            return candidate
+    return candidates[-1]
+
