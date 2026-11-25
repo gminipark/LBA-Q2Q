@@ -884,3 +884,97 @@ def cancel_session(session_id: str) -> dict[str, Any]:
         if acquired:
             session.lock.release()
 
+
+@app.post("/api/sessions/{session_id}/expand")
+def expand_session_kg(session_id: str) -> dict[str, Any]:
+    session = get_session_or_404(session_id)
+    with session.lock:
+        if session.status == "expanded":
+            return session_payload(session)
+        if session.status not in {"complete", "expansion_error"}:
+            raise HTTPException(
+                status_code=409,
+                detail="KG expansion is available only after the final answer.",
+            )
+        if not session.transcript:
+            # Answered directly using knowledge already verified in the expanded KG.
+            episode_keys = pipeline.unique_in_order(
+                record.episode_key for record in session.records
+            )
+            ep_id = episode_keys[0] if episode_keys else ""
+            session.expansion_results = [
+                {
+                    "question": "(Already verified in KG)",
+                    "answer": "Yes",
+                    "status": "already_exists",
+                    "quadruple": {
+                        "episode": ep_id,
+                        "head": rel.get("head", ""),
+                        "type": rel.get("type", ""),
+                        "subtype": rel.get("subtype", ""),
+                        "tail": rel.get("tail", ""),
+                    },
+                }
+                for rel in session.added_relations
+            ]
+            session.status = "expanded"
+            return session_payload(session)
+
+        session.status = "expanding"
+        session.expansion_error = None
+        session.stop_event.clear()
+        session.cancel_requested = False
+        episode_keys = pipeline.unique_in_order(
+            record.episode_key for record in session.records
+        )
+        try:
+            if not episode_keys:
+                raise ValueError("No episode was associated with the retrieved scenes.")
+            kb = get_knowledge_base()
+            episode_data = kb.episodes.get(episode_keys[0])
+            if episode_data is None:
+                raise ValueError(
+                    f"Episode metadata is not present in the test KG: {episode_keys[0]}"
+                )
+            episode_id = str(episode_data.get("episode", episode_keys[0]))
+            final_ans = (
+                session.final_decision.final_answer
+                if session.final_decision and session.final_decision.final_answer
+                else (session.reference_answer or "")
+            )
+            with SessionAgentContext(session) as agent:
+                results = pipeline.expand_kg_from_dialogue(
+                    agent=agent,
+                    source_kg_path=KG_PATH,
+                    expanded_kg_path=EXPANDED_KG_PATH,
+                    type_subtype_map_path=TYPE_SUBTYPE_MAP_PATH,
+                    transcript_csv_path=TRANSCRIPT_CSV_PATH,
+                    expansion_log_path=EXPANSION_LOG_PATH,
+                    visualization_path=VISUALIZATION_PATH,
+                    transcript=session.transcript,
+                    episode_id=episode_id,
+                    original_question=session.question,
+                    final_answer=final_ans,
+                )
+            get_knowledge_base()
+            session.expansion_results = results
+            session.status = "expanded"
+        except pipeline.GenerationCancelled:
+            session.status = "cancelled"
+            session.cancel_requested = True
+            session.expansion_error = "KG expansion was cancelled by the user."
+            return session_payload(session)
+        except (FileNotFoundError, RuntimeError, ValueError) as exc:
+            session.status = "expansion_error"
+            session.expansion_error = str(exc)
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        return session_payload(session)
+
+
+if __name__ == "__main__":
+    uvicorn.run(
+        app,
+        host=os.environ.get("LBA_HOST", "0.0.0.0"),
+        port=int(os.environ.get("LBA_PORT", "7860")),
+        reload=False,
+    )
