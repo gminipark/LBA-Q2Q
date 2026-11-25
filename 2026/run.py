@@ -2697,3 +2697,107 @@ def extract_kg_quadruple(
     }
     return result, info
 
+
+
+def ensure_episode_entity(
+    episode_knowledge: dict[str, Any], entity: str
+) -> None:
+    if entity not in episode_knowledge or not isinstance(
+        episode_knowledge.get(entity), dict
+    ):
+        episode_knowledge[entity] = {"events": {}, "relationships": {}}
+    episode_knowledge[entity].setdefault("events", {})
+    episode_knowledge[entity].setdefault("relationships", {})
+
+
+def relation_pairs(relation_info: dict[str, Any]) -> list[tuple[str, str]]:
+    relation_type = relation_info.get("type")
+    subtype = relation_info.get("subtype")
+    relation_types = (
+        [relation_type] if isinstance(relation_type, str)
+        else relation_type if isinstance(relation_type, list) else []
+    )
+    subtypes = (
+        [subtype] if isinstance(subtype, str)
+        else subtype if isinstance(subtype, list) else []
+    )
+    return [
+        (str(relation_name), str(subtype_name))
+        for relation_name, subtype_name in zip(relation_types, subtypes)
+        if relation_name is not None and subtype_name is not None
+    ]
+
+
+def add_quadruple_to_episode(
+    episode: dict[str, Any],
+    head: str,
+    relation_type: str,
+    subtype: str,
+    tail: str,
+) -> str:
+    episode_knowledge = episode.setdefault("episode_knowledge", {})
+    if not isinstance(episode_knowledge, dict):
+        raise ValueError("episode_knowledge must be a JSON object.")
+    ensure_episode_entity(episode_knowledge, head)
+    ensure_episode_entity(episode_knowledge, tail)
+    relationships = episode_knowledge[head]["relationships"]
+    if not isinstance(relationships, dict):
+        relationships = {}
+        episode_knowledge[head]["relationships"] = relationships
+    new_pair = (relation_type, subtype)
+    if tail not in relationships or not isinstance(relationships[tail], dict):
+        relationships[tail] = {"type": relation_type, "subtype": subtype}
+        return "added_new_relation"
+    existing_pairs = relation_pairs(relationships[tail])
+    if new_pair in existing_pairs:
+        return "already_exists"
+    existing_pairs.append(new_pair)
+    relationships[tail] = {
+        "type": [pair[0] for pair in existing_pairs],
+        "subtype": [pair[1] for pair in existing_pairs],
+    }
+    return "added_additional_relation"
+
+
+def find_target_episode(
+    kg_data: Sequence[dict[str, Any]], episode_id: str
+) -> dict[str, Any]:
+    requested_key = episode_key_from_id(episode_id)
+    for episode in kg_data:
+        stored_id = str(episode.get("episode", ""))
+        if stored_id == episode_id or episode_key_from_id(stored_id) == requested_key:
+            return episode
+    raise ValueError(f"Episode not found for KG expansion: {episode_id}")
+
+
+def kg_graph_signature(
+    kg_data: Sequence[dict[str, Any]],
+) -> dict[str, list[str]]:
+    nodes: set[str] = set()
+    edges: set[str] = set()
+    for episode in kg_data:
+        episode_id = str(episode.get("episode", ""))
+        knowledge = episode.get("episode_knowledge", {})
+        if not isinstance(knowledge, dict):
+            continue
+        for head, info in knowledge.items():
+            head_name = str(head)
+            nodes.add(head_name)
+            if not isinstance(info, dict):
+                continue
+            relationships = info.get("relationships", {})
+            if not isinstance(relationships, dict):
+                continue
+            for tail, relation_info in relationships.items():
+                tail_name = str(tail)
+                nodes.add(tail_name)
+                if not isinstance(relation_info, dict):
+                    continue
+                for relation_type, subtype in relation_pairs(relation_info):
+                    edges.add(
+                        "|".join(
+                            (episode_id, head_name, relation_type, subtype, tail_name)
+                        )
+                    )
+    return {"nodes": sorted(nodes), "edges": sorted(edges)}
+
