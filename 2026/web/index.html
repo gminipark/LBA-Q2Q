@@ -1,0 +1,563 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DramaQA · Q2Q KG Lab</title>
+  <style>
+    :root {
+      --ink: #17211b;
+      --muted: #69746c;
+      --paper: #f4f1e9;
+      --panel: rgba(255, 255, 252, .88);
+      --line: #d8d7cc;
+      --green: #174f3d;
+      --green-2: #287a5d;
+      --lime: #c8f36f;
+      --orange: #ef7f4d;
+      --red: #b93838;
+      --shadow: 0 18px 50px rgba(37, 53, 43, .10);
+      --radius: 22px;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 8% 0%, rgba(200,243,111,.34), transparent 29rem),
+        radial-gradient(circle at 94% 18%, rgba(239,127,77,.16), transparent 26rem),
+        var(--paper);
+      font-family: Inter, Pretendard, "Noto Sans KR", ui-sans-serif, system-ui, sans-serif;
+    }
+    button, textarea, input { font: inherit; }
+    button { cursor: pointer; }
+    .shell { width: min(1480px, calc(100% - 36px)); margin: 0 auto; padding: 30px 0 64px; }
+    header { display: flex; justify-content: space-between; gap: 24px; align-items: flex-start; margin-bottom: 26px; }
+    .eyebrow { color: var(--green-2); font-weight: 800; letter-spacing: .13em; text-transform: uppercase; font-size: 12px; }
+    h1 { margin: 7px 0 8px; font-family: Georgia, "Noto Serif KR", serif; font-size: clamp(32px, 5vw, 58px); line-height: .98; letter-spacing: -.045em; }
+    .subtitle { max-width: 720px; color: var(--muted); line-height: 1.65; margin: 0; }
+    .model-actions { flex:0 0 auto; display:flex; align-items:center; gap:9px; flex-wrap:wrap; justify-content:flex-end; }
+    .model-chip { flex: 0 0 auto; display: flex; align-items: center; gap: 9px; padding: 10px 14px; border: 1px solid var(--line); background: rgba(255,255,255,.55); border-radius: 999px; font-size: 13px; }
+    .unload { border:1px solid #d5b596; background:#fff8ed; color:#8a4b1f; border-radius:999px; padding:10px 13px; font-size:12px; font-weight:850; }
+    .unload:hover { background:#ffedd7; }
+    .dot { width: 9px; height: 9px; border-radius: 50%; background: #adb5ad; box-shadow: 0 0 0 4px rgba(173,181,173,.16); }
+    .dot.live { background: var(--green-2); box-shadow: 0 0 0 4px rgba(40,122,93,.15); }
+
+    .card { background: var(--panel); border: 1px solid rgba(216,215,204,.92); border-radius: var(--radius); box-shadow: var(--shadow); backdrop-filter: blur(14px); }
+    .composer { padding: 22px; margin-bottom: 18px; }
+    .composer-row { display: grid; grid-template-columns: 1fr auto; gap: 14px; align-items: end; }
+    label { font-size: 13px; font-weight: 800; display: block; margin: 0 0 8px; }
+    textarea, input {
+      width: 100%; border: 1px solid var(--line); border-radius: 14px; background: #fffefa;
+      color: var(--ink); padding: 13px 14px; outline: none; transition: border-color .15s, box-shadow .15s;
+    }
+    textarea { min-height: 90px; resize: vertical; line-height: 1.52; }
+    textarea:focus, input:focus { border-color: var(--green-2); box-shadow: 0 0 0 4px rgba(40,122,93,.11); }
+    .primary { border: 0; border-radius: 14px; background: var(--green); color: white; font-weight: 800; padding: 16px 22px; min-height: 52px; box-shadow: 0 9px 22px rgba(23,79,61,.20); }
+    .primary:hover { background: #0f4433; transform: translateY(-1px); }
+    .composer-buttons { display:flex; gap:9px; align-items:stretch; }
+    .danger { border:1px solid #e2aaaa; border-radius:14px; background:#fff1f1; color:var(--red); font-weight:850; padding:13px 16px; min-height:52px; }
+    .danger:hover { background:#ffe4e4; transform:translateY(-1px); }
+    button:disabled { cursor: wait; opacity: .52; transform: none !important; }
+    .tools { margin-top: 12px; display: flex; align-items: center; gap: 11px; flex-wrap: wrap; }
+    .text-button { border: 0; background: transparent; color: var(--green-2); padding: 4px 1px; font-weight: 750; }
+    details.advanced { margin-left: auto; color: var(--muted); font-size: 13px; }
+    details.advanced summary { cursor: pointer; font-weight: 750; text-align: right; }
+    .advanced-grid { display: grid; grid-template-columns: minmax(200px, 2fr) repeat(4, minmax(95px, 1fr)); gap: 10px; margin-top: 13px; min-width: min(850px, 78vw); }
+    .advanced-grid label { font-size: 11px; color: var(--muted); }
+    .advanced-grid input { padding: 9px 10px; }
+    .gpu-note { grid-column: 1 / -1; color: var(--muted); font-size: 11px; line-height: 1.55; padding: 2px 2px 0; }
+    .gpu-note strong { color: var(--green-2); }
+    .gpu-note .locked { color: var(--orange); font-weight: 800; }
+
+    .pipeline { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 18px; }
+    .stage { position: relative; min-height: 76px; padding: 14px 15px; border: 1px solid var(--line); border-radius: 16px; background: rgba(255,255,255,.48); overflow: hidden; }
+    .stage::after { content: ""; position: absolute; left: 0; bottom: 0; width: 0; height: 4px; background: var(--green-2); transition: width .35s; }
+    .stage.working::after { width: 68%; animation: progress 1.3s ease-in-out infinite alternate; }
+    .stage.done::after { width: 100%; background: var(--lime); }
+    .stage.error::after { width: 100%; background: var(--red); }
+    @keyframes progress { to { width: 92%; } }
+    .stage-no { color: var(--green-2); font-size: 11px; font-weight: 900; letter-spacing: .08em; }
+    .stage-name { margin-top: 5px; font-weight: 850; font-size: 14px; }
+    .stage-state { margin-top: 3px; color: var(--muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+    .workspace { display: grid; grid-template-columns: minmax(0, 1.62fr) minmax(310px, .78fr); gap: 18px; align-items: start; }
+    .panel-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 19px 21px 14px; border-bottom: 1px solid var(--line); }
+    .panel-head h2 { margin: 0; font-size: 16px; letter-spacing: -.01em; }
+    .badge { border-radius: 999px; padding: 6px 9px; background: #edf0e8; color: var(--muted); font-size: 11px; font-weight: 800; }
+    .chat-card { min-height: 590px; display: flex; flex-direction: column; overflow: hidden; }
+    .chat { flex: 1; padding: 24px; overflow: auto; max-height: 690px; }
+    .empty { min-height: 380px; display: grid; place-items: center; text-align: center; color: var(--muted); padding: 30px; }
+    .empty-icon { margin: 0 auto 14px; width: 58px; height: 58px; display: grid; place-items: center; border-radius: 20px; background: #eaf3d7; color: var(--green); font-size: 24px; }
+    .message { display: flex; gap: 10px; margin: 0 0 17px; align-items: flex-start; }
+    .message.user { justify-content: flex-end; }
+    .avatar { flex: 0 0 auto; width: 31px; height: 31px; display: grid; place-items: center; border-radius: 10px; background: var(--green); color: white; font-weight: 900; font-size: 11px; }
+    .bubble { max-width: min(78%, 680px); padding: 13px 15px; border: 1px solid var(--line); border-radius: 5px 17px 17px; background: white; line-height: 1.55; font-size: 14px; }
+    .message.user .bubble { background: var(--green); border-color: var(--green); color: white; border-radius: 17px 5px 17px 17px; }
+    .message.origin .bubble { background: #f7f4e9; }
+    .role { display: block; margin-bottom: 5px; font-size: 10px; font-weight: 900; letter-spacing: .09em; text-transform: uppercase; color: var(--green-2); }
+    .message.user .role { color: #cdeada; }
+    .message.final .bubble { background: #f0f9df; border-color: #c2dc8b; max-width: 92%; }
+    .message.thinking .bubble { background: #fbfaf4; border-style: dashed; color: var(--muted); }
+    .thinking-inline { display: inline-flex; align-items: center; gap: 9px; font-weight: 600; color: var(--muted); }
+    .evidence-list { margin: 9px 0 0; padding-left: 18px; color: #435148; }
+    .chat-actions { min-height: 82px; padding: 15px 20px; border-top: 1px solid var(--line); background: rgba(250,250,245,.78); display: flex; align-items: center; justify-content: center; gap: 12px; }
+    .answer { min-width: 138px; padding: 13px 22px; border-radius: 13px; font-weight: 900; border: 1px solid var(--line); background: white; color: var(--ink); }
+    .answer.yes { background: var(--lime); border-color: #b1d75f; }
+    .answer.no:hover, .answer.yes:hover { transform: translateY(-1px); box-shadow: 0 8px 18px rgba(40,60,48,.10); }
+    .waiting { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 13px; }
+    .spinner { width: 17px; height: 17px; border: 2px solid #ccd2ca; border-top-color: var(--green-2); border-radius: 50%; animation: spin .8s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .evidence-card { overflow: hidden; }
+    .evidence-body { padding: 18px; max-height: 704px; overflow: auto; }
+    .meta-row { display: flex; gap: 7px; flex-wrap: wrap; margin-bottom: 16px; }
+    .scene { padding: 6px 9px; border-radius: 9px; background: #edf4e1; color: var(--green); font-size: 11px; font-weight: 850; }
+    .frames { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
+    .frame { position: relative; border-radius: 12px; overflow: hidden; background: #dfe3db; aspect-ratio: 16/10; }
+    .frame img { width: 100%; height: 100%; object-fit: cover; display: block; }
+    .frame span { position: absolute; left: 7px; bottom: 7px; color: white; background: rgba(12,23,17,.72); padding: 4px 6px; border-radius: 6px; font-size: 9px; }
+    .context-details { margin-top: 14px; border-top: 1px solid var(--line); padding-top: 13px; }
+    .context-details summary { cursor: pointer; color: var(--green-2); font-size: 12px; font-weight: 850; }
+    pre { margin: 11px 0 0; padding: 13px; border-radius: 12px; background: #17211b; color: #dce9de; white-space: pre-wrap; overflow-wrap: anywhere; font: 11px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; max-height: 340px; overflow: auto; }
+
+    .expansion { margin-top: 18px; overflow: hidden; }
+    .expansion-body { padding: 20px; }
+    .expansion-empty { color: var(--muted); text-align: center; padding: 34px 10px; }
+    .result-summary { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; margin-bottom: 14px; }
+    .count { padding: 7px 10px; border-radius: 10px; background: #eef1eb; font-size: 12px; font-weight: 850; }
+    .relation-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(245px, 1fr)); gap: 9px; margin-bottom: 18px; }
+    .relation { border: 1px solid var(--line); border-radius: 14px; padding: 12px; background: white; font-size: 12px; }
+    .relation .status { color: var(--green-2); font-weight: 900; text-transform: uppercase; font-size: 10px; }
+    .quad { margin-top: 8px; line-height: 1.55; overflow-wrap: anywhere; }
+    .output-links { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 14px; }
+    .output-links a { color: var(--green); text-decoration: none; background: #edf4e1; border-radius: 10px; padding: 8px 10px; font-size: 12px; font-weight: 850; }
+    .graph { width: 100%; height: 680px; border: 1px solid var(--line); border-radius: 16px; background: white; }
+    .error-box { border: 1px solid #efc0c0; background: #fff0f0; color: #872828; border-radius: 13px; padding: 13px; line-height: 1.45; }
+    .toast { position: fixed; right: 22px; bottom: 22px; z-index: 20; max-width: min(430px, calc(100vw - 44px)); background: #242c27; color: white; border-radius: 13px; padding: 13px 15px; box-shadow: var(--shadow); opacity: 0; pointer-events: none; transform: translateY(8px); transition: .2s; }
+    .toast.show { opacity: 1; transform: translateY(0); }
+    .hidden { display: none !important; }
+    @media (max-width: 900px) {
+      header { display: block; }
+      .model-chip { display: inline-flex; margin-top: 15px; }
+      .workspace { grid-template-columns: 1fr; }
+      .pipeline { grid-template-columns: repeat(2, 1fr); }
+      .composer-row { grid-template-columns: 1fr; }
+      .advanced-grid { grid-template-columns: 1fr 1fr; min-width: 0; }
+      details.advanced { width: 100%; margin-left: 0; }
+      details.advanced summary { text-align: left; }
+      .graph { height: 540px; }
+    }
+    @media (max-width: 560px) {
+      .shell { width: min(100% - 20px, 1480px); padding-top: 18px; }
+      .composer, .chat, .expansion-body { padding: 15px; }
+      .pipeline { grid-template-columns: 1fr 1fr; }
+      .stage { padding: 11px; min-height: 69px; }
+      .bubble { max-width: 88%; }
+      .answer { min-width: 112px; }
+      .frames { grid-template-columns: 1fr; }
+      .advanced-grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <header>
+      <div>
+        <div class="eyebrow">KHU NLP Lab.</div>
+        <h1>DramaQA · Q2Q KG</h1>
+        <p class="subtitle">이미지와 compact KG를 근거로 yes/no sub-question을 이어가고, 대화가 끝나면 relation을 추출해 확장된 KG를 시각화합니다.</p>
+      </div>
+      <div class="model-actions"><div class="model-chip"><span id="modelDot" class="dot"></span><span id="modelName">Qwen/Qwen3.8-27B · lazy load</span></div><button id="unloadButton" class="unload hidden" type="button">GPU 모델 내리기</button></div>
+    </header>
+
+    <form id="composer" class="composer card">
+      <div class="composer-row">
+        <div>
+          <label for="question">Original question</label>
+          <textarea id="question" required maxlength="4000" placeholder="DramaQA 질문을 입력하세요"></textarea>
+        </div>
+        <div class="composer-buttons"><button id="startButton" class="primary" type="submit">대화 시작</button><button id="stopButton" class="danger hidden" type="button">강제 종료</button></div>
+      </div>
+      <div class="tools">
+        <button id="sampleButton" class="text-button" type="button">예시 질문 불러오기</button>
+        <details class="advanced">
+          <summary>Advanced options</summary>
+          <div class="advanced-grid">
+            <div><label for="vid">Scene ID (optional)</label><input id="vid" placeholder="AnotherMissOh16_005_0000"></div>
+            <div><label for="topScenes">Top scenes</label><input id="topScenes" type="number" min="1" max="10" value="2"></div>
+            <div><label for="maxImages">Max images</label><input id="maxImages" type="number" min="0" max="12" value="4"></div>
+            <div><label for="minQuestions">Min questions</label><input id="minQuestions" type="number" min="0" max="10" value="1"></div>
+            <div><label for="maxQuestions">Max questions</label><input id="maxQuestions" type="number" min="1" max="10" value="5"></div>
+            <div><label for="gpuIds">GPU IDs</label><input id="gpuIds" placeholder="0 or 0,1"></div>
+            <div><label for="maxGpuMemory">Max VRAM / GPU (GiB)</label><input id="maxGpuMemory" type="number" min="1" max="1024" step="0.5" placeholder="e.g. 22"></div>
+            <div><label for="maxCpuMemory">CPU offload RAM (GiB)</label><input id="maxCpuMemory" type="number" min="1" max="4096" step="1" placeholder="e.g. 64"></div>
+            <div><label for="gpuIdleTimeout">Auto unload idle (min)</label><input id="gpuIdleTimeout" type="number" min="0" max="1440" step="0.5" value="10" title="0 disables automatic unload"></div>
+            <div class="gpu-note"><div id="gpuInventory">GPU 목록 확인 중...</div><div id="gpuLockHint">빈 값은 서버에서 보이는 모든 GPU와 자동 메모리 배치를 사용합니다.</div></div>
+          </div>
+        </details>
+      </div>
+    </form>
+
+    <section id="pipeline" class="pipeline" aria-label="pipeline progress"></section>
+
+    <main class="workspace">
+      <section class="chat-card card">
+        <div class="panel-head"><h2>Dialogue</h2><span id="turnBadge" class="badge">준비</span></div>
+        <div id="chat" class="chat">
+          <div class="empty"><div><div class="empty-icon">Q</div><strong>질문을 입력하면 대화가 여기에 표시됩니다.</strong><br><small>Sub-question은 항상 yes/no 형식입니다.</small></div></div>
+        </div>
+        <div id="chatActions" class="chat-actions"><span class="waiting">대화를 시작해 주세요.</span></div>
+      </section>
+
+      <aside class="evidence-card card">
+        <div class="panel-head"><h2>Retrieved evidence</h2><span id="retrievalBadge" class="badge">대기</span></div>
+        <div id="evidence" class="evidence-body"><div class="expansion-empty">선택된 scene, 대표 프레임, compact KG가 표시됩니다.</div></div>
+      </aside>
+    </main>
+
+    <section class="expansion card">
+      <div class="panel-head"><h2>KG expansion &amp; visualization</h2><span id="expansionBadge" class="badge">초기 그래프</span></div>
+      <div id="expansionBody" class="expansion-body">
+        <div class="expansion-empty" style="padding: 8px 10px 14px;">최종 답변 이후 sub-question / sub-answer relation이 추출되어 아래 그래프에 병합됩니다.</div>
+        <iframe class="graph" src="/output/visualization/expanded_kg.html" title="Initial KG visualization"></iframe>
+      </div>
+    </section>
+  </div>
+  <div id="toast" class="toast" role="alert"></div>
+
+  <script>
+    const $ = (selector) => document.querySelector(selector);
+    const escapeHTML = (value) => String(value ?? "").replace(/[&<>'"]/g, (char) => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[char]));
+    let session = null;
+    let busy = false;
+    const stages = {
+      retrieval: { no: "01", name: "Evidence retrieval", state: "대기", mode: "" },
+      model: { no: "02", name: "Reasoning", state: "대기", mode: "" },
+      dialogue: { no: "03", name: "Yes / No dialogue", state: "대기", mode: "" },
+      expansion: { no: "04", name: "KG expansion", state: "대기", mode: "" },
+    };
+
+    function renderStages() {
+      $("#pipeline").innerHTML = Object.values(stages).map((stage) => `
+        <div class="stage ${stage.mode}"><div class="stage-no">STEP ${stage.no}</div><div class="stage-name">${escapeHTML(stage.name)}</div><div class="stage-state">${escapeHTML(stage.state)}</div></div>
+      `).join("");
+    }
+    function setStage(key, mode, state) { stages[key].mode = mode; stages[key].state = state; renderStages(); }
+    function resetStages() { Object.keys(stages).forEach((key) => { stages[key].mode = ""; stages[key].state = "대기"; }); renderStages(); }
+    function showToast(message) {
+      const toast = $("#toast"); toast.textContent = message; toast.classList.add("show");
+      clearTimeout(showToast.timer); showToast.timer = setTimeout(() => toast.classList.remove("show"), 5200);
+    }
+    async function api(path, options = {}) {
+      const response = await fetch(path, { headers: { "Content-Type": "application/json", ...(options.headers || {}) }, ...options });
+      let body = null; try { body = await response.json(); } catch (_) {}
+      if (!response.ok) throw new Error(body?.detail || `HTTP ${response.status}`);
+      return body;
+    }
+    function setBusy(value) { busy = value; $("#startButton").disabled = value; $("#sampleButton").disabled = value; }
+    function waiting(text) { $("#chatActions").innerHTML = `<span class="waiting"><span class="spinner"></span>${escapeHTML(text)}</span>`; }
+
+    function message(role, text, kind = "") {
+      const isUser = role === "user";
+      return `<div class="message ${isUser ? "user" : "assistant"} ${kind}">${isUser ? "" : `<div class="avatar">${kind === "final" ? "A" : "Q"}</div>`}<div class="bubble"><span class="role">${isUser ? "You" : kind === "origin" ? "Original question" : kind === "final" ? "Final answer" : "Sub-question"}</span>${escapeHTML(text)}</div></div>`;
+    }
+    function thinkingMessage(text = "모델이 thinking 중입니다...") {
+      return `<div class="message assistant thinking"><div class="avatar">···</div><div class="bubble"><span class="role">Reasoning</span><span class="thinking-inline"><span class="spinner"></span>${escapeHTML(text)}</span></div></div>`;
+    }
+    function renderChat(data) {
+      if (!data) return;
+      let html = message("assistant", data.question, "origin");
+      for (const turn of data.dialogue || []) {
+        html += message("assistant", turn.sub_question);
+        html += message("user", turn.answer);
+      }
+      if (data.current_sub_question) html += message("assistant", data.current_sub_question);
+      if (data.pending_answer) html += message("user", data.pending_answer);
+      if (data.is_thinking) {
+        html += thinkingMessage(data.thinking_text || "모델이 thinking 중입니다...");
+      }
+      if (data.final) {
+        const evidence = (data.final.evidence || []).map((item) => `<li>${escapeHTML(item)}</li>`).join("");
+        html += `<div class="message assistant final"><div class="avatar">A</div><div class="bubble"><span class="role">Final answer</span>${escapeHTML(data.final.final_answer)}${evidence ? `<ul class="evidence-list">${evidence}</ul>` : ""}</div></div>`;
+      }
+      $("#chat").innerHTML = html;
+      $("#chat").scrollTop = $("#chat").scrollHeight;
+      const turn = (data.dialogue?.length || 0) + (data.pending_answer ? 1 : 0);
+      $("#turnBadge").textContent = data.final ? `완료 · ${turn} turns` : data.is_thinking ? "Thinking..." : data.current_sub_question ? `Turn ${turn + 1} / ${data.max_subquestions}` : "준비";
+      if (data.status === "awaiting_answer" && !data.is_thinking) {
+        $("#chatActions").innerHTML = `<button class="answer yes" data-answer="Yes">Yes</button><button class="answer no" data-answer="No">No</button>`;
+        document.querySelectorAll("[data-answer]").forEach((button) => button.addEventListener("click", () => submitAnswer(button.dataset.answer)));
+      } else if (data.status === "cancelled") {
+        $("#chatActions").innerHTML = `<span class="waiting">사용자가 이 세션을 중지했습니다.</span>`;
+      } else if (data.final) {
+        $("#chatActions").innerHTML = `<span class="waiting">대화가 완료되었습니다.</span>`;
+      }
+    }
+    function renderEvidence(data) {
+      const scenes = (data.scene_ids || []).map((id) => `<span class="scene">${escapeHTML(id)}</span>`).join("");
+      const frames = (data.images || []).map((item) => `<figure class="frame"><img loading="lazy" src="${escapeHTML(item.url)}" alt="${escapeHTML(item.scene_id)} frame"><span>${escapeHTML(item.scene_id)}</span></figure>`).join("");
+      const context = escapeHTML(JSON.stringify(data.kg_context ?? {}, null, 2));
+      $("#evidence").innerHTML = `<div class="meta-row">${scenes || '<span class="scene">No scene</span>'}</div>${frames ? `<div class="frames">${frames}</div>` : '<div class="expansion-empty">대표 프레임을 찾지 못했습니다.</div>'}<details class="context-details"><summary>Compact KG context 보기</summary><pre>${context}</pre></details>`;
+      $("#retrievalBadge").textContent = data.retrieval_method || "retrieved";
+    }
+    function updateModel(data) {
+      const config = data.model_config || {};
+      const gpuLabel = config.gpu_ids === "" ? "no GPU" : config.gpu_ids ? `GPU ${config.gpu_ids}` : "all GPUs";
+      const memoryLabel = config.max_gpu_memory_gib ? ` · ${config.max_gpu_memory_gib} GiB/GPU` : "";
+      const idleLabel = config.gpu_idle_timeout_minutes > 0 ? ` · auto unload ${config.gpu_idle_timeout_minutes}m` : " · auto unload off";
+      $("#modelName").textContent = `${data.model} · ${gpuLabel}${memoryLabel}${idleLabel}${data.model_loaded ? " · loaded" : " · lazy load"}`;
+      $("#modelDot").classList.toggle("live", Boolean(data.model_loaded));
+      $("#unloadButton").classList.toggle("hidden", !data.model_loaded);
+      const values = { gpuIds: config.gpu_ids ?? "", maxGpuMemory: config.max_gpu_memory_gib ?? "", maxCpuMemory: config.max_cpu_memory_gib ?? "", gpuIdleTimeout: config.gpu_idle_timeout_minutes ?? 10 };
+      for (const [id, value] of Object.entries(values)) {
+        const input = $("#" + id);
+        if (!input.dataset.touched) input.value = value;
+        input.disabled = Boolean(config.locked) && id !== "gpuIdleTimeout";
+      }
+      $("#gpuLockHint").innerHTML = config.locked
+        ? `<span class="locked">모델이 이미 로드되어 GPU 설정이 잠겼습니다. 변경하려면 먼저 GPU 모델 내리기 버튼을 누르세요.</span>`
+        : "빈 값은 서버에서 보이는 모든 GPU와 자동 메모리 배치를 사용합니다. 대화 시작 시 설정됩니다.";
+    }
+    function renderExpansion(data) {
+      if (!data) return;
+      const badge = $("#expansionBadge");
+      if (data.status === "expanding") { badge.textContent = "처리 중"; return; }
+      if (data.status === "expansion_error") {
+        badge.textContent = "오류";
+        $("#expansionBody").innerHTML = `<div class="error-box">${escapeHTML(data.kg_expansion_error || "KG expansion failed")}</div>`;
+        return;
+      }
+      if (data.status !== "expanded") return;
+      badge.textContent = "완료";
+      const results = data.kg_expansion || [];
+      const counts = results.reduce((acc, item) => { acc[item.status] = (acc[item.status] || 0) + 1; return acc; }, {});
+      const summary = Object.entries(counts).map(([key, value]) => `<span class="count">${escapeHTML(key)} ${value}</span>`).join("") || '<span class="count">0 relations</span>';
+      const relations = results.map((item) => {
+        const q = item.quadruple;
+        const quad = q ? `<div class="quad"><strong>${escapeHTML(q.head)}</strong> → ${escapeHTML(q.tail)}<br>${escapeHTML(q.type)} / ${escapeHTML(q.subtype)}</div>` : `<div class="quad">${escapeHTML(item.error || item.selection_info?.reason || "No quadruple added")}</div>`;
+        return `<div class="relation"><span class="status">${escapeHTML(item.status)}</span>${quad}</div>`;
+      }).join("");
+      const outputs = data.kg_expansion_outputs || {};
+      const links = [["Visualization", outputs.visualization], ["Expanded KG", outputs.expanded_kg], ["Expansion log", outputs.expansion_log], ["Transcript CSV", outputs.transcript_csv], ["Type map", outputs.type_subtype_map]].filter(([, url]) => url).map(([name, url]) => `<a href="${escapeHTML(url)}" target="_blank" rel="noopener">${name} ↗</a>`).join("");
+      $("#expansionBody").innerHTML = `<div class="result-summary">${summary}</div><div class="relation-grid">${relations}</div><div class="output-links">${links}</div>${outputs.visualization ? `<iframe class="graph" src="${escapeHTML(outputs.visualization)}" title="Expanded KG visualization"></iframe>` : ""}`;
+    }
+    function updateStopButton() {
+      const button = $("#stopButton");
+      const terminal = !session || ["cancelled", "expanded"].includes(session.status);
+      button.classList.toggle("hidden", !session || terminal);
+      button.disabled = terminal || Boolean(session?.cancel_requested);
+    }
+
+    function markCancelled() {
+      for (const key of ["model", "dialogue", "expansion"]) {
+        if (stages[key].mode === "working") setStage(key, "error", "사용자가 중지함");
+      }
+      if (session) {
+        session.is_thinking = false;
+        session.pending_answer = null;
+        renderChat(session);
+      }
+      $("#chatActions").innerHTML = `<span class="waiting">사용자가 이 세션을 중지했습니다.</span>`;
+      updateStopButton();
+    }
+
+    function renderAll(data) {
+      const merged = session ? {
+        ...session,
+        ...data,
+        kg_context: data.kg_context ?? session.kg_context,
+      } : data;
+      session = merged;
+      renderChat(merged);
+      renderEvidence(merged);
+      renderExpansion(merged);
+      updateModel(merged);
+      updateStopButton();
+    }
+
+    async function startDialogue(event) {
+      event.preventDefault();
+      if (busy) return;
+      const minQuestions = Number($("#minQuestions").value);
+      const maxQuestions = Number($("#maxQuestions").value);
+      if (minQuestions > maxQuestions) { showToast("Min questions는 Max questions보다 클 수 없습니다."); return; }
+      session = null; resetStages(); setBusy(true);
+      $("#chat").innerHTML = '<div class="empty"><div><div class="spinner" style="margin:0 auto 14px"></div>관련 scene과 KG를 검색하는 중...</div></div>';
+      waiting("Evidence retrieval 중...");
+      $("#expansionBody").innerHTML = `<div class="expansion-empty" style="padding: 8px 10px 14px;">최종 답변 이후 자동 실행됩니다.</div><iframe class="graph" src="/output/visualization/expanded_kg.html?v=${Date.now()}" title="Current KG visualization"></iframe>`;
+      $("#expansionBadge").textContent = "대기";
+      setStage("retrieval", "working", "scene · image · compact KG 검색 중");
+      try {
+        const created = await api("/api/sessions", { method: "POST", body: JSON.stringify({
+          question: $("#question").value,
+          vid: $("#vid").value || null,
+          top_scenes: Number($("#topScenes").value), max_images: Number($("#maxImages").value),
+          min_subquestions: minQuestions, max_subquestions: maxQuestions,
+          gpu_ids: $("#gpuIds").value.trim() || null,
+          max_gpu_memory_gib: $("#maxGpuMemory").value ? Number($("#maxGpuMemory").value) : null,
+          max_cpu_memory_gib: $("#maxCpuMemory").value ? Number($("#maxCpuMemory").value) : null,
+          gpu_idle_timeout_minutes: $("#gpuIdleTimeout").value === "" ? null : Number($("#gpuIdleTimeout").value),
+        }) });
+        renderAll({
+          ...created,
+          status: "generating",
+          is_thinking: true,
+          thinking_text: created.model_loaded
+            ? "Thinking 중... (KG와 프레임을 바탕으로 추론하고 있습니다)"
+            : "모델을 로드하고 Thinking 중입니다 (최초 1회)...",
+        });
+        setStage("retrieval", "done", `${created.scene_ids.length} scene · ${created.images.length} frame`);
+        setStage("model", "working", created.model_loaded ? "thinking · 생성 중" : "모델 로드 및 thinking 중 (최초 1회)");
+        waiting(created.model_loaded ? "모델이 thinking 중입니다..." : "Qwen3.8-27B를 로드하고 thinking 중입니다. 최초 실행은 시간이 걸릴 수 있습니다...");
+        const next = await api(`/api/sessions/${created.session_id}/next`, { method: "POST", body: "{}" });
+        renderAll({ ...next, is_thinking: false, thinking_text: null, pending_answer: null });
+        if (next.status === "cancelled") { markCancelled(); return; }
+        setStage("model", "done", "추론 완료");
+        if (next.final) {
+          setStage("dialogue", "done", `${next.dialogue.length} turns · 기존 KG 지식으로 즉시 완료`);
+          await runExpansion(next);
+        } else {
+          setStage("dialogue", "working", "yes/no 응답 대기");
+        }
+      } catch (error) {
+        if (session) {
+          session.is_thinking = false;
+          session.pending_answer = null;
+          renderChat(session);
+        }
+        setStage(session ? "model" : "retrieval", "error", error.message);
+        $("#chatActions").innerHTML = `<div class="error-box">${escapeHTML(error.message)}</div>`;
+        showToast(error.message);
+      } finally { setBusy(false); }
+    }
+
+    async function submitAnswer(answer) {
+      if (!session || busy) return;
+      setBusy(true);
+      document.querySelectorAll("[data-answer]").forEach((button) => button.disabled = true);
+      renderAll({
+        ...session,
+        status: "generating",
+        pending_answer: answer,
+        is_thinking: true,
+        thinking_text: "Thinking 중... (답변을 반영해 다음 결정을 추론하고 있습니다)",
+      });
+      waiting("모델이 thinking 중입니다...");
+      setStage("model", "working", "thinking · 다음 결정 추론 중");
+      setStage("dialogue", "working", `${answer} 반영 · 다음 결정 생성 중`);
+      try {
+        const updated = await api(`/api/sessions/${session.session_id}/answer`, { method: "POST", body: JSON.stringify({ answer }) });
+        renderAll({ ...updated, is_thinking: false, thinking_text: null, pending_answer: null });
+        if (updated.status === "cancelled") { markCancelled(); return; }
+        setStage("model", "done", "추론 완료");
+        if (updated.final) {
+          setStage("dialogue", "done", `${updated.dialogue.length} turns · final answer 완료`);
+          await runExpansion(updated);
+        } else {
+          setStage("dialogue", "working", "yes/no 응답 대기");
+        }
+      } catch (error) {
+        showToast(error.message);
+        setStage("dialogue", "error", error.message);
+        if (session) {
+          session.is_thinking = false;
+          session.pending_answer = null;
+          session.status = "awaiting_answer";
+          renderChat(session);
+        }
+      } finally { setBusy(false); }
+    }
+
+    async function runExpansion(data) {
+      setStage("expansion", "working", "relation 추출 · KG 병합 중");
+      $("#expansionBadge").textContent = "처리 중";
+      $("#expansionBody").innerHTML = '<div class="expansion-empty"><span class="waiting" style="justify-content:center"><span class="spinner"></span>각 sub-question에서 relation을 추출하고 visualization을 생성하는 중...</span></div>';
+      try {
+        const expanded = await api(`/api/sessions/${data.session_id}/expand`, { method: "POST", body: "{}" });
+        renderAll(expanded);
+        if (expanded.status === "cancelled") { markCancelled(); return; }
+        setStage("expansion", "done", `${expanded.kg_expansion.length} dialogue relations 처리`);
+      } catch (error) {
+        setStage("expansion", "error", error.message);
+        $("#expansionBadge").textContent = "오류";
+        $("#expansionBody").innerHTML = `<div class="error-box">${escapeHTML(error.message)}</div>`;
+        showToast(error.message);
+      }
+    }
+
+    async function stopDialogue() {
+      if (!session || session.cancel_requested || ["cancelled", "expanded"].includes(session.status)) return;
+      session.cancel_requested = true;
+      updateStopButton();
+      $("#chatActions").innerHTML = `<span class="waiting"><span class="spinner"></span>강제 종료 요청을 전달하는 중...</span>`;
+      try {
+        const result = await api(`/api/sessions/${session.session_id}/cancel`, { method: "POST", body: "{}" });
+        showToast(result.status === "cancelling" ? "중지 신호를 보냈습니다. 현재 token 처리가 끝나면 멈춥니다." : "세션을 중지했습니다.");
+        if (result.status === "cancelled") {
+          const latest = await api(`/api/sessions/${session.session_id}`);
+          renderAll(latest);
+          markCancelled();
+        }
+      } catch (error) {
+        session.cancel_requested = false;
+        updateStopButton();
+        showToast(error.message);
+      }
+    }
+
+
+    async function unloadModelFromGpu() {
+      const button = $("#unloadButton");
+      button.disabled = true;
+      try {
+        const data = await api("/api/model/unload", { method: "POST", body: "{}" });
+        updateModel(data);
+        showToast(data.unload_status === "already_unloaded" ? "모델이 이미 내려가 있습니다." : "모델을 GPU 메모리에서 내렸습니다.");
+        await loadGpuInventory();
+      } catch (error) {
+        showToast(error.message);
+      } finally {
+        button.disabled = false;
+      }
+    }
+
+
+    async function loadGpuInventory() {
+      try {
+        const data = await api("/api/gpus");
+        if (!data.available) {
+          $("#gpuInventory").textContent = "nvidia-smi에서 GPU 목록을 읽지 못했습니다.";
+          return;
+        }
+        $("#gpuInventory").innerHTML = "감지된 GPU: " + data.gpus.map((gpu) =>
+          `<strong>${gpu.index}</strong> ${escapeHTML(gpu.name)} (${(gpu.memory_used_mib / 1024).toFixed(1)} / ${(gpu.memory_total_mib / 1024).toFixed(1)} GiB)`
+        ).join(" · ");
+      } catch (_) {
+        $("#gpuInventory").textContent = "GPU 목록을 불러오지 못했습니다.";
+      }
+    }
+
+    ["gpuIds", "maxGpuMemory", "maxCpuMemory", "gpuIdleTimeout"].forEach((id) =>
+      $("#" + id).addEventListener("input", (event) => event.target.dataset.touched = "1")
+    );
+
+    $("#composer").addEventListener("submit", startDialogue);
+    $("#stopButton").addEventListener("click", stopDialogue);
+    $("#unloadButton").addEventListener("click", unloadModelFromGpu);
+    $("#sampleButton").addEventListener("click", async () => {
+      try { const data = await api("/api/sample"); $("#question").value = data.question; $("#question").focus(); } catch (error) { showToast(error.message); }
+    });
+    document.addEventListener("keydown", (event) => {
+      if (!session || session.status !== "awaiting_answer" || busy || ["INPUT", "TEXTAREA"].includes(document.activeElement.tagName)) return;
+      if (event.key.toLowerCase() === "y") submitAnswer("Yes");
+      if (event.key.toLowerCase() === "n") submitAnswer("No");
+    });
+    renderStages();
+    api("/api/health").then((data) => updateModel(data)).catch(() => {});
+    loadGpuInventory();
+    setInterval(() => api("/api/health").then((data) => updateModel(data)).catch(() => {}), 10000);
+  </script>
+</body>
+</html>
